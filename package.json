@@ -21,6 +21,7 @@
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
+    "assets/",
     "LICENSE"
   ],
   "pi": {

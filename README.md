@@ -4,14 +4,33 @@
 
 **Local mailboxes for independent Pi coding sessions.**
 
-Pi Mail adds a small communication layer to Pi. Each Pi session gets a stable mailbox identity, sessions in the same project can discover one another, and messages remain available even when the recipient is offline. A human supervisor can inspect the same mail system and send messages through a local Web UI.
+Pi Mail gives Pi sessions a small, project-local mailbox. Each session gets a stable identity, can discover other sessions in the same project, and can exchange messages asynchronously even when a recipient is offline. The user can inspect the same mailboxes and send messages from a local Web UI.
 
-Pi Mail deliberately stops at communication. It does **not** create teams, assign tasks, spawn agents, schedule work, or decide how sessions should collaborate.
+Pi Mail is intentionally limited to communication. It does **not** create teams, assign tasks, spawn agents, schedule work, or decide how sessions should collaborate.
 
-```text
-Pi Session A ─┐
-Pi Session B ─┼── project-local mail store ── Human Web UI
-Pi Session C ─┘
+A typical API compatibility review might unfold like this:
+
+```mermaid
+sequenceDiagram
+    participant A as Session A
+    participant B as Session B
+    participant U as User
+
+    A->>B: Send quiet mail: review API migration
+    Note right of A: "Please check compatibility with the old response format."
+    Note over A,B: Quiet peer mail is delivered asynchronously; it does not interrupt B
+    B->>B: Pi footer shows mail 1
+    B->>B: Call mail with inbox
+    B-->>A: Reply with review findings
+
+    U->>B: Send a question from /mail-ui
+    Note right of B: Pi receives this as a genuine user message
+    B-->>U: Reply to the reserved user address
+
+    A->>B: Send urgent mail with notify: true
+    B->>B: Pi inserts a pi-mail custom message
+    B->>B: Deliver as steer and trigger a turn
+    Note right of B: The Agent is alerted immediately; the mail is still peer-session mail
 ```
 
 ## What Pi Mail provides
@@ -27,7 +46,7 @@ The runtime has no third-party NPM dependencies. Storage uses Node filesystem pr
 
 ## Agent experience
 
-Pi exposes a single compound tool named `mail`. Detailed usage guidance lives in the bundled `pi-mail` skill, so the always-visible tool schema stays small.
+Pi exposes one `mail` tool. Detailed usage guidance lives in the bundled `pi-mail` skill, keeping the tool definition compact.
 
 A session can discover active peers:
 
@@ -47,7 +66,7 @@ mail {
 }
 ```
 
-Peer mail is quiet by default. If the sender explicitly needs to interrupt direct `To` recipients, it can opt in:
+Peer mail is quiet by default. With `notify: true`, the recipient's Pi process inserts a `pi-mail` custom message, delivers it as `steer`, and triggers a turn. This immediately alerts direct `To` recipients; `Cc` recipients remain quiet.
 
 ```text
 mail {
@@ -59,7 +78,7 @@ mail {
 }
 ```
 
-Normal mailbox work stays asynchronous. Inbox listings and thread views use bounded previews; a specific message can be opened in full. `wait` provides a finite, non-consuming wait for new or already-pending mail when a reply is expected:
+Routine mailbox work is asynchronous. Inbox listings and thread views use bounded previews; a specific message can be opened in full. `wait` provides a finite, non-consuming wait for new or already-pending mail when a reply is expected:
 
 ```text
 mail { action: "inbox", unpresented_only: true }
@@ -68,11 +87,11 @@ mail { action: "wait", timeout_seconds: 60 }
 
 If a recipient is inactive, delivery still succeeds as long as that mailbox exists. The sender is told that the recipient is currently inactive, and the message remains waiting until that Pi session resumes.
 
-Messages sent by another Pi session are always identified as peer-session mail, not as human authorization. Messages composed by the human through the Web UI enter Pi as genuine user messages.
+Mail from another Pi session is clearly marked as peer-session mail and must not be treated as user authorization. Messages sent through the Web UI enter Pi as genuine user messages.
 
 ## User experience
 
-Pi Mail also gives the human supervisor a project-wide view of the communication layer.
+Pi Mail also gives the user a project-wide mailbox view.
 
 ```text
 /mail-ui
@@ -86,7 +105,7 @@ Pi Mail also gives the human supervisor a project-wide view of the communication
 
 From the Web UI, the user can read project mail and compose a message to one session, several sessions, or all currently active sessions. Inactive historical mailboxes can also be deleted manually when they are no longer useful. Deleting a mailbox removes that session's recipient state without rewriting shared messages that still belong to other participants.
 
-The Web UI is only a supervisor client; mail delivery does not depend on it being open. Its local server is automatically closed when the owning Pi session shuts down, and it can also be stopped explicitly with `/mail-ui close` or the page close action.
+The Web UI is optional: mail delivery continues while it is closed. Its local server stops automatically when the Pi session that opened it shuts down; `/mail-ui close` and the page close action stop it manually.
 
 Pi itself shows a compact `mail N` footer status when the current session has unpresented inbox entries. A user can optionally enable a stale-mail reminder for that mailbox with `/mail-reminder <minutes>`; this policy is disabled by default.
 
@@ -126,6 +145,75 @@ pi install /absolute/path/to/pi-mail
 ```
 
 Pi packages run with the user's local system permissions, so review third-party extension source before installing it.
+
+## Runtime showcase
+
+A minimal two-session flow looks like this. The aliases below are illustrative; use the names returned by `discover` in your project.
+
+Session A discovers Session B and sends a quiet peer message:
+
+```text
+mail { action: "discover" }
+# 1 session:
+# - reviewer (8ea109ceb705) · active
+
+mail {
+  action: "send",
+  to: ["reviewer"],
+  subject: "Review request",
+  body: "Please review the storage changes."
+}
+# Sent [2ece9830] "Review request" to reviewer (8ea109ceb705).
+```
+
+Session B receives the message without an interrupt. Pi shows the pending count in its footer, and the session can inspect and answer it:
+
+```text
+# Pi footer: mail 1
+mail { action: "inbox", unpresented_only: true }
+# 1 inbox message:
+# [2ece9830] Review request · session-... (8ea109ceb705) · TO
+# Please review the storage changes.
+
+mail {
+  action: "send",
+  reply_to: "2ece9830",
+  body: "Reviewed. The storage changes look compatible."
+}
+```
+
+These screenshots come from one live run. Session IDs, timestamps, and message IDs will differ between runs.
+
+![Pi Mail backlog notice and inbox](./assets/notice.jpg)
+
+*Backlog notice after three quiet direct messages. The notice reports only the count; use `inbox` to inspect message previews.*
+
+![Pi Mail wait showcase](./assets/wait.jpg)
+
+*Finite `wait` returns when a new message arrives without consuming it. Use `inbox` with `message_id` to open the full message.*
+
+For a human-side view, run `/mail-ui` in either active Pi session. The page brings together project status, recent messages, session presence, pending `To` / `Cc` counts, and a **Compose as user** form. Messages sent from this form enter the target Pi session as genuine user messages; `/mail-ui close` stops the local server.
+
+![Pi Mail Web UI showcase](./assets/web-ui.jpg)
+
+*Project status, recent messages, user-origin composition, and session mailboxes in one page.*
+
+To demonstrate immediate attention instead, repeat the send with `notify: true`:
+
+```text
+mail {
+  action: "send",
+  to: ["reviewer"],
+  subject: "Review needed now",
+  body: "Please check the compatibility regression.",
+  notify: true
+}
+# Immediate notification requested for direct To recipients.
+```
+
+![Pi Mail notify runtime showcase](./assets/notify.jpg)
+
+*With `notify: true`, the recipient Pi process inserts a peer-labeled custom message, delivers it as `steer`, and triggers a turn.*
 
 ## Development and reference
 
