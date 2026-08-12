@@ -16,21 +16,14 @@ sequenceDiagram
     participant B as Session B
     participant U as User
 
-    A->>B: 发送静默邮件：请评审 API 迁移
-    Note right of A: “请确认新响应格式兼容旧客户端。”
-    Note over A,B: 普通 peer mail 以异步方式投递，不会打断 B
-    B->>B: Pi 底部显示 mail 1
-    B->>B: 调用 mail 执行 inbox
-    B-->>A: 回复兼容性评审结果
+    A->>B: 静默 API 评审邮件
+    B-->>A: 回复评审结果
 
-    U->>B: 从 /mail-ui 向 B 发起提问
-    Note right of B: Pi 将其作为真实 user message 接收
-    B-->>U: 回复到预留的 user 地址
+    U->>B: 从 mail UI 发送消息
+    B-->>U: Session B 回复
 
-    A->>B: 使用 notify: true 发送紧急邮件
-    B->>B: Pi 在进程内插入一条 pi-mail custom message
-    B->>B: 以 steer 方式投递并触发一轮 turn
-    Note right of B: Agent 会立即收到提醒；邮件身份仍然是 peer-session
+    A->>B: 使用 notify true 发送紧急邮件
+    B-->>A: Pi steer Session B 并触发一轮 turn
 ```
 
 ## Pi Mail 提供什么

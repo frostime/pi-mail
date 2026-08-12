@@ -16,21 +16,14 @@ sequenceDiagram
     participant B as Session B
     participant U as User
 
-    A->>B: Send quiet mail: review API migration
-    Note right of A: "Please check compatibility with the old response format."
-    Note over A,B: Quiet peer mail is delivered asynchronously; it does not interrupt B
-    B->>B: Pi footer shows mail 1
-    B->>B: Call mail with inbox
-    B-->>A: Reply with review findings
+    A->>B: Quiet API review mail
+    B-->>A: Review findings
 
-    U->>B: Send a question from /mail-ui
-    Note right of B: Pi receives this as a genuine user message
-    B-->>U: Reply to the reserved user address
+    U->>B: Message from the mail UI
+    B-->>U: Reply from Session B
 
-    A->>B: Send urgent mail with notify: true
-    B->>B: Pi inserts a pi-mail custom message
-    B->>B: Deliver as steer and trigger a turn
-    Note right of B: The Agent is alerted immediately; the mail is still peer-session mail
+    A->>B: Urgent mail with notify true
+    B-->>A: Pi steers Session B and starts a turn
 ```
 
 ## What Pi Mail provides
