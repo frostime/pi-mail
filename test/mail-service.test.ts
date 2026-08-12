@@ -329,7 +329,7 @@ test("wait has a finite timeout and returns control", async () => {
   assert.ok(result.waitedMs >= 30);
 });
 
-test("inbox and thread tool text use bounded body previews", async () => {
+test("mail views include creation timestamps while keeping previews bounded", async () => {
   const { a } = await makeServices();
   const body = "x".repeat(BODY_PREVIEW_CHARS + 100);
   const message = await a.send({ to: ["bob"], subject: "Long body", body });
@@ -337,7 +337,16 @@ test("inbox and thread tool text use bounded body previews", async () => {
   const listText = formatToolContent("inbox", [message]);
   const fullText = formatToolContent("inbox", message);
   const threadText = formatToolContent("thread", [message]);
+  const sentText = formatToolContent("sent", await a.listSent());
+  const waitText = formatToolContent("wait", {
+    reason: "pending",
+    waitedMs: 0,
+    messages: [message],
+  });
 
+  for (const text of [listText, fullText, threadText, sentText, waitText]) {
+    assert.match(text, new RegExp(message.createdAt.replaceAll(".", "\\.")));
+  }
   assert.ok(listText.length < fullText.length);
   assert.match(listText, /…/);
   assert.match(threadText, /…/);

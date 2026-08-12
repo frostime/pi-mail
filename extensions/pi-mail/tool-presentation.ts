@@ -65,6 +65,7 @@ function formatMailFull(mail: MailMessage): string {
 
   return [
     `[${mail.shortId}] ${mail.subject}`,
+    `Sent: ${mail.createdAt}`,
     `From: ${peerLabel(mail.from)}`,
     `To: ${to}${cc}${delivery}`,
     `Message-ID: ${mail.id}`,
@@ -76,7 +77,7 @@ function formatMailFull(mail: MailMessage): string {
 
 function formatMailPreview(mail: MailMessage): string {
   const recipientKind = mail.delivery ? ` · ${mail.delivery.kind.toUpperCase()}` : "";
-  return `[${mail.shortId}] ${mail.subject} · ${peerLabel(mail.from)}${recipientKind}\n${previewBody(mail.body)}`;
+  return `[${mail.shortId}] ${mail.subject} · ${peerLabel(mail.from)} · ${mail.createdAt}${recipientKind}\n${previewBody(mail.body)}`;
 }
 
 function formatWait(result: WaitResult): string {
@@ -121,7 +122,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
       const to = message.to.map(peerLabel).join(", ");
       const cc = message.cc.length ? `; Cc ${message.cc.map(peerLabel).join(", ")}` : "";
       const inactive = recipients.filter((recipient) => recipient.active === false);
-      const lines = [`Sent [${message.shortId}] "${message.subject}" to ${to}${cc}.`];
+      const lines = [`Sent [${message.shortId}] "${message.subject}" at ${message.createdAt} to ${to}${cc}.`];
       if (message.notify) lines.push("Immediate notification requested for direct To recipients.");
       if (inactive.length) {
         lines.push(`Inactive recipient${inactive.length === 1 ? "" : "s"}: ${inactive.map(peerLabel).join(", ")}. Mail was delivered to their mailbox and will remain there until the session becomes active again.`);
@@ -147,7 +148,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
         `${messages.length} sent message${messages.length === 1 ? "" : "s"}:`,
         ...messages.map((message) => {
           const recipients = message.recipients.map(formatRecipientState).join("; ");
-          return `- [${message.shortId}] ${message.subject} · ${recipients || "no recipients"}`;
+          return `- [${message.shortId}] ${message.subject} · ${message.createdAt} · ${recipients || "no recipients"}`;
         }),
       ].join("\n");
     }

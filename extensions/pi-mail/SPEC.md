@@ -72,7 +72,9 @@ The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count th
 
 ### Model-facing views
 
-`inbox` without `message_id` is a list view and must use bounded body previews. `inbox` with a specific `message_id` returns that received message in full and normally marks its delivery presented. `thread` and `sent` use bounded or summary views and must not mark deliveries presented. `wait` is preview-oriented and must not mark deliveries presented. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
+`inbox` without `message_id` is a list view and must use bounded body previews. Mail previews must include the message creation timestamp so an Agent can establish message order. `inbox` with a specific `message_id` returns that received message in full and normally marks its delivery presented. Full messages must include the creation timestamp and delivery kind when available. `thread` and `sent` use bounded or summary views and must not mark deliveries presented; both must retain each message's creation timestamp. `wait` is preview-oriented and must not mark deliveries presented, but its returned previews must include creation timestamps. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
+
+Pi-injected peer and human messages must also include the message creation timestamp so the conversational presentation preserves ordering context.
 
 Mail sent from the Web UI must be injected through Pi's user-message API on an active recipient runtime so the authority boundary is truthful. Web UI observation is read-only with respect to delivery state.
 

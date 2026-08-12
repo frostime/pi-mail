@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+Agent-facing mail views now include each message's creation timestamp, including inbox previews, full messages, threads, sent mail, wait results, and Pi-injected peer or human messages. This makes message ordering explicit across concurrent sessions.
+
 ## 0.6.0
 
 Added an optional stale-mail reminder policy for the current mailbox. It is disabled by default and controlled by the human user with `/mail-reminder off|<minutes>` (1-1440 minutes). The reminder applies only to quiet, unpresented direct `To` mail; it does not wake for `Cc`, explicit `notify: true` mail, human-origin mail, or already-presented messages. It is intentionally an adapter-level attention policy rather than a mail protocol field or orchestration feature. Existing three-message backlog notices now count only direct `To` mail, preventing informational Cc traffic from waking a session.

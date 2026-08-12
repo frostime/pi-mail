@@ -43,6 +43,7 @@ function peerMailContent(mail: MailMessage): string {
   return [
     `<pi_mail source="peer-session" message_id="${mail.id}" thread_id="${mail.threadId}" recipient_kind="${mail.delivery?.kind ?? "to"}" notify="true">`,
     `From: ${source}`,
+    `Sent: ${mail.createdAt}`,
     `Subject: ${mail.subject}`,
     `Cc: ${cc}`,
     "",
@@ -56,6 +57,7 @@ function peerMailContent(mail: MailMessage): string {
 function humanMailContent(mail: MailMessage): string {
   return [
     `[Pi Mail · message ${mail.shortId}]`,
+    `Sent: ${mail.createdAt}`,
     `Subject: ${mail.subject}`,
     "",
     mail.body,
