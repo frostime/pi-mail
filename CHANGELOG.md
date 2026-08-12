@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0
+
+Peer mail is now quiet by default. `send` accepts `notify: true` for immediate attention from direct `To` recipients, while `Cc` remains silent. Ordinary pending mail produces only a lightweight mailbox-count reminder after three accumulated messages, and inactive recipients are explicitly reported in the sender-facing result while delivery still succeeds durably.
+
+Model-facing mailbox output is bounded: inbox listings and thread views show short body previews, while `inbox` with a specific `message_id` returns the full received message. Tool registration metadata was reduced substantially; operational guidance now lives in the bundled `pi-mail` skill.
+
+The Web UI can delete inactive session mailboxes under the human supervisor's authority. Deletion removes recipient mailbox state and tombstones the session identity without rewriting shared canonical project messages. The session list is scrollable, and active/current mailboxes cannot be deleted.
+
+Fork/clone semantics are now explicit: a new Pi session UUID gets a new mailbox identity through normal registration; Pi Mail does not copy mailbox state, create lineage, or automatically notify peers. Canonical storage remains one immutable JSON file per message with no automatic history cap.
+
 ## 0.3.0
 
 Message references are now consistent with peer addressing: `reply_to` and `message_id` accept exact IDs or unambiguous prefixes of at least six characters. This makes the eight-character IDs shown by Pi Mail directly usable for replies, inbox lookup, and thread lookup.

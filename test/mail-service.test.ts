@@ -6,7 +6,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { HUMAN_PRINCIPAL_ID, MailService } from "../extensions/pi-mail/mail-service.ts";
+import { mailboxNoticeBucket, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
 import { resolveProjectRoot } from "../extensions/pi-mail/project-root.ts";
+import { BODY_PREVIEW_CHARS, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
 
 async function makeServices() {
@@ -91,6 +93,37 @@ test("one message can address multiple To and Cc recipients", async () => {
   assert.equal(cInbox[0].delivery?.kind, "cc");
 });
 
+test("peer mail is quiet by default and persists an explicit notify hint", async () => {
+  const { a } = await makeServices();
+
+  const quiet = await a.send({ to: ["bob"], body: "quiet" });
+  const notifying = await a.send({ to: ["bob"], body: "notify", notify: true });
+
+  assert.equal(quiet.notify, false);
+  assert.equal(notifying.notify, true);
+  assert.equal((await a.store.getMessage(quiet.id))?.notify, false);
+  assert.equal((await a.store.getMessage(notifying.id))?.notify, true);
+
+  const quietDelivery = { ...quiet, delivery: { kind: "to" as const, deliveredAt: new Date().toISOString(), presentedAt: null } };
+  const notifyingDelivery = { ...notifying, delivery: { kind: "to" as const, deliveredAt: new Date().toISOString(), presentedAt: null } };
+  const notifyingCc = { ...notifying, delivery: { kind: "cc" as const, deliveredAt: new Date().toISOString(), presentedAt: null } };
+  assert.equal(shouldInterruptForPeerMail(quietDelivery), false);
+  assert.equal(shouldInterruptForPeerMail(notifyingDelivery), true);
+  assert.equal(shouldInterruptForPeerMail(notifyingCc), false);
+  assert.deepEqual([0, 1, 2, 3, 5, 6].map(mailboxNoticeBucket), [0, 0, 0, 1, 1, 2]);
+});
+
+test("sending to an inactive historical mailbox succeeds and reports it inactive", async () => {
+  const { a, b } = await makeServices();
+  await b.close();
+
+  const message = await a.send({ to: ["bob"], subject: "Offline", body: "Read this after resume." });
+  const recipients = await a.recipientStatusesFor(message.id);
+
+  assert.equal(recipients[0].active, false);
+  assert.equal((await inbox(b))[0].id, message.id);
+});
+
 test("message references accept unambiguous ID prefixes", async () => {
   const { a, b } = await makeServices();
 
@@ -167,6 +200,55 @@ test("human-origin mail can be answered through the reserved user address", asyn
   assert.equal(reply.threadId, humanMessage.threadId);
 });
 
+test("human supervisor can delete only inactive mailboxes without erasing shared messages", async () => {
+  const { cwd, a, b } = await makeServices();
+  const message = await a.send({ to: ["bob"], subject: "Keep shared", body: "Shared history" });
+
+  await assert.rejects(() => a.deleteProjectMailbox("bob"), /active session mailbox/);
+  await b.close();
+  const deleted = await a.deleteProjectMailbox("bob");
+  assert.equal(deleted.alias, "bob");
+  assert.equal((await a.listProjectSessions({ includeInactive: true })).some((peer) => peer.id === b.sessionId), false);
+  await assert.rejects(() => a.send({ to: ["bob"], body: "Should fail" }), /Unknown recipient/);
+  assert.ok((await a.listSent()).some((item) => item.id === message.id));
+
+  const resumed = new MailService({ cwd, sessionId: b.sessionId, runtimeId: "runtime-b-resumed", presenceTtlMs: 60_000 });
+  await resumed.init();
+  assert.equal((await inbox(resumed)).length, 0);
+  assert.ok((await a.discover()).some((peer) => peer.id === b.sessionId));
+});
+
+test("a new session identity in the same project starts with an independent mailbox", async () => {
+  const { cwd, a, b } = await makeServices();
+  await a.send({ to: ["bob"], body: "Only Bob should receive this." });
+
+  const fork = new MailService({
+    cwd,
+    sessionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    runtimeId: "runtime-fork",
+    presenceTtlMs: 60_000,
+  });
+  await fork.init({ alias: "fork" });
+
+  assert.equal((await inbox(fork)).length, 0);
+  assert.ok((await fork.discover()).some((peer) => peer.id === b.sessionId));
+});
+
+test("inbox and thread tool text use bounded body previews", async () => {
+  const { a } = await makeServices();
+  const body = "x".repeat(BODY_PREVIEW_CHARS + 100);
+  const message = await a.send({ to: ["bob"], subject: "Long body", body });
+
+  const listText = formatToolContent("inbox", [message]);
+  const fullText = formatToolContent("inbox", message);
+  const threadText = formatToolContent("thread", [message]);
+
+  assert.ok(listText.length < fullText.length);
+  assert.match(listText, /…/);
+  assert.match(threadText, /…/);
+  assert.ok(fullText.includes(body));
+});
+
 test("Pi Mail 0.1 messages without senderKind remain session-origin messages", async () => {
   const { a, b } = await makeServices();
   const createdAt = new Date().toISOString();
@@ -196,6 +278,7 @@ test("Pi Mail 0.1 messages without senderKind remain session-origin messages", a
 
   const message = (await inbox(b)).find((item) => item.id === id);
   assert.equal(message?.senderKind, "session");
+  assert.equal(message?.notify, false);
   assert.ok((await a.listSent()).some((item) => item.id === id));
 });
 

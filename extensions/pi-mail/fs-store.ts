@@ -116,6 +116,7 @@ export class FsMailStore {
     await atomicWriteJson(this.peerFile(peer.id), peer);
   }
 
+
   async listPeers(): Promise<PeerRecord[]> {
     return listJson(path.join(this.root, "peers"));
   }
@@ -136,6 +137,11 @@ export class FsMailStore {
       // A non-empty directory means another runtime for this session is still
       // present and therefore must remain discoverable.
     }
+  }
+
+  async removeSessionPresence(sessionId: string): Promise<void> {
+    assertSafeId(sessionId, "session id");
+    await rm(path.join(this.root, "presence", sessionId), { recursive: true, force: true });
   }
 
   async listPresence(): Promise<PresenceRecord[]> {
@@ -191,6 +197,11 @@ export class FsMailStore {
   async listDeliveries(recipientId: string): Promise<DeliveryRecord[]> {
     assertSafeId(recipientId, "recipient id");
     return listJson(path.join(this.root, "mailboxes", recipientId));
+  }
+
+  async removeMailbox(recipientId: string): Promise<void> {
+    assertSafeId(recipientId, "recipient id");
+    await rm(path.join(this.root, "mailboxes", recipientId), { recursive: true, force: true });
   }
 
   async updateDelivery(

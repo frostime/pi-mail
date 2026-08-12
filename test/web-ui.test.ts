@@ -32,6 +32,8 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.match(html, /以用户身份写信/);
     assert.match(html, /prefers-color-scheme/);
     assert.match(html, /To: all active/);
+    assert.match(html, /Delete mailbox/);
+    assert.match(html, /删除邮箱/);
 
     const { base, headers } = authorization(ui.url);
     assert.equal((await fetch(`${base}/api/state`)).status, 401);
@@ -52,6 +54,17 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.equal(aInbox[0].senderKind, "human");
     assert.equal(bInbox[0].senderKind, "human");
     assert.equal(bInbox[0].subject, "From Web UI");
+
+    await b.close();
+    const deleteResponse = await fetch(`${base}/api/delete-mailbox`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_id: b.sessionId }),
+    });
+    assert.equal(deleteResponse.status, 200);
+
+    const afterDelete = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string }> };
+    assert.equal(afterDelete.peers.some((peer) => peer.id === b.sessionId), false);
 
     const closeResponse = await fetch(`${base}/api/close`, {
       method: "POST",

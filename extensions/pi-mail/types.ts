@@ -9,6 +9,8 @@ export interface PeerRecord {
   discoverable: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Tombstone set by the human mailbox administrator; init clears it on resume. */
+  deletedAt?: string;
 }
 
 export interface PresenceRecord {
@@ -32,6 +34,8 @@ export interface MessageRecord {
   cc: string[];
   subject: string;
   body: string;
+  /** Optional in records written before Pi Mail 0.4; absence means false. */
+  notify?: boolean;
   threadId: string;
   inReplyTo: string | null;
   createdAt: string;
@@ -61,6 +65,7 @@ export interface MailMessage {
   cc: PeerAddress[];
   subject: string;
   body: string;
+  notify: boolean;
   threadId: string;
   inReplyTo: string | null;
   createdAt: string;
@@ -91,6 +96,8 @@ export interface SentRecipient extends PeerAddress {
   kind: RecipientKind;
   deliveredAt: string | null;
   presentedAt: string | null;
+  /** null is reserved for non-session principals such as the local human user. */
+  active: boolean | null;
 }
 
 export interface SentMessageSummary {

@@ -21,6 +21,10 @@ interface ComposeRequest {
   body?: unknown;
 }
 
+interface DeleteMailboxRequest {
+  session_id?: unknown;
+}
+
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -67,6 +71,13 @@ function composeInput(value: unknown): { to: string[]; cc: string[]; subject?: s
     subject: typeof input.subject === "string" ? input.subject : undefined,
     body,
   };
+}
+
+function mailboxToDelete(value: unknown): string {
+  const input = (typeof value === "object" && value !== null ? value : {}) as DeleteMailboxRequest;
+  const sessionId = typeof input.session_id === "string" ? input.session_id.trim() : "";
+  if (!sessionId) throw new Error("session_id is required");
+  return sessionId;
 }
 
 async function renderHtml(): Promise<{ html: string; nonce: string }> {
@@ -150,6 +161,12 @@ export async function startWebUi(service: MailService): Promise<WebUiHandle> {
       if (url.pathname === "/api/send" && request.method === "POST") {
         const message = await service.sendAsHuman(composeInput(await readJsonBody(request)));
         json(response, 201, { message });
+        return;
+      }
+
+      if (url.pathname === "/api/delete-mailbox" && request.method === "POST") {
+        const mailbox = await service.deleteProjectMailbox(mailboxToDelete(await readJsonBody(request)));
+        json(response, 200, { mailbox });
         return;
       }
 

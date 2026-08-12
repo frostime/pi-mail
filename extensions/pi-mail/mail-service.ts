@@ -33,6 +33,7 @@ export interface SendMailInput {
   cc?: string[];
   subject?: string;
   body?: string;
+  notify?: boolean;
   replyTo?: string;
   replyAll?: boolean;
 }
@@ -185,6 +186,7 @@ export class MailService {
     }
 
     return peers
+      .filter((peer) => !peer.deletedAt)
       .filter((peer) => options.includeSelf || peer.id !== this.sessionId)
       .filter((peer) => options.includeUndiscoverable || peer.discoverable !== false)
       .filter((peer) => options.includeInactive || presenceBySession.has(peer.id))
@@ -227,7 +229,33 @@ export class MailService {
       senderId: HUMAN_PRINCIPAL_ID,
       senderAlias: HUMAN_PRINCIPAL_ALIAS,
       ...input,
+      notify: true,
     });
+  }
+
+  async recipientStatusesFor(messageId: string): Promise<SentRecipient[]> {
+    const message = await this.store.getMessage(messageId);
+    if (!message) throw new Error(`Unknown message "${messageId}"`);
+    return this.recipientStatuses(message);
+  }
+
+  async deleteProjectMailbox(address: string): Promise<PeerAddress> {
+    const peerId = await this.resolveOne(address);
+    if (peerId === HUMAN_PRINCIPAL_ID) throw new Error("The human principal has no deletable session mailbox");
+    if (peerId === this.sessionId) throw new Error("Cannot delete the mailbox of the current active session");
+
+    const active = await this.activeSessionIds();
+    if (active.has(peerId)) throw new Error("Cannot delete an active session mailbox");
+
+    const peer = await this.store.getPeer(peerId);
+    if (!peer || peer.deletedAt) throw new Error(`Unknown session mailbox "${address}"`);
+
+    const deletedAt = nowIso();
+    await this.store.removeMailbox(peerId);
+    await this.store.removeSessionPresence(peerId);
+    await this.store.putPeer({ ...peer, deletedAt, updatedAt: deletedAt });
+
+    return { id: peer.id, shortId: peer.id.slice(0, 8), alias: peer.alias };
   }
 
   async listInbox(options: {
@@ -419,6 +447,7 @@ export class MailService {
       cc: ccIds,
       subject: String(subject ?? "(no subject)").trim() || "(no subject)",
       body: input.body,
+      notify: input.notify === true,
       threadId: threadId ?? id,
       inReplyTo,
       createdAt,
@@ -476,7 +505,7 @@ export class MailService {
       return HUMAN_PRINCIPAL_ID;
     }
 
-    const peers = await this.store.listPeers();
+    const peers = (await this.store.listPeers()).filter((peer) => !peer.deletedAt);
     const exactId = peers.find((peer) => peer.id === query);
     if (exactId) return exactId.id;
 
@@ -537,6 +566,7 @@ export class MailService {
       cc: message.cc.map((id) => label(id)),
       subject: message.subject,
       body: message.body,
+      notify: message.notify === true,
       threadId: message.threadId,
       inReplyTo: message.inReplyTo,
       createdAt: message.createdAt,
@@ -552,6 +582,7 @@ export class MailService {
 
   private async recipientStatuses(message: MessageRecord) {
     const peers = await this.peerMap();
+    const active = await this.activeSessionIds();
     const output = [];
 
     for (const [kind, ids] of [["to", message.to], ["cc", message.cc]] as const) {
@@ -566,6 +597,7 @@ export class MailService {
           kind,
           deliveredAt: delivery?.deliveredAt ?? null,
           presentedAt: delivery?.presentedAt ?? null,
+          active: recipientId === HUMAN_PRINCIPAL_ID ? null : active.has(recipientId),
         });
       }
     }
