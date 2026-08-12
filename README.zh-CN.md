@@ -2,13 +2,61 @@
 
 [English](./README.md)
 
-**为彼此独立的 Pi Coding Session 提供本地邮箱通信。**
+**一个本地跨 session 的多 agent 通信基础设施。**
 
-Pi Mail 为 Pi session 提供项目内的本地邮箱。每个 session 都有稳定的身份，可以发现同一项目中的其他 session；即使收件方暂时离线，邮件也能异步送达并保留下来。用户可以通过本地 Web UI 查看这些邮箱并发送消息。
+Pi Mail 让同一项目中的独立 Pi session 可以互相收发消息。多个 Agent 分别负责实现、评审、调研、测试或问题排查时，可以通过它保持联系，而不需要合并各自的对话上下文。
 
-Pi Mail 的职责是通信。它**不负责**创建 team、分配任务、启动 agent、安排执行顺序，也不决定多个 session 应该如何协作。
+## 安装
 
-下面用一个 API 兼容性评审的例子说明典型流程：
+使用 Pi 安装已经发布的 package：
+
+```bash
+pi install npm:pi-mail
+```
+
+如果只想在当前项目中安装：
+
+```bash
+pi install npm:pi-mail -l
+```
+
+也可以直接从 GitHub 安装：
+
+```bash
+pi install git:github.com/frostime/pi-mail
+```
+
+安装后重启 Pi，或执行 `/reload`。Pi Mail 也可以在 [Pi package gallery](https://pi.dev/packages/pi-mail) 中找到。
+
+## 这个 extension 提供什么
+
+Pi Mail 会向 Pi 注册两个供 Agent 使用的组件：
+
+- 一个内置的 `mail` tool，用于发现 session、收发消息、在线程中回复，以及等待新邮件。
+- 一个随包安装的 `pi-mail` skill，用于告诉 Agent 各项邮件操作应该在什么场景下使用，以及如何调用。
+
+这些 tool 调用由 Agent 自己完成。用户不需要手写 tool 参数，也不需要管理邮箱文件。
+
+Pi Mail 同时提供用户侧操作：
+
+- `/mail-ui` 打开当前项目的本地邮箱和写信界面。
+- `/mail-reminder` 设置静默邮件长时间未处理时的提醒。
+- Pi 底部状态栏显示当前 session 的待处理邮件数量。
+
+## Agent 如何通信
+
+Agent 可以使用注册到 Pi 中的 `mail` tool：
+
+- 查看自己的邮箱身份，并设置易读的 alias；
+- 发现当前项目中的其他 Pi session；
+- 使用 `To` 和 `Cc` 给一个或多个 session 发消息；
+- 查看收件箱、已发送邮件和 conversation thread；
+- 回复发件人，或回复 thread 中的所有参与者；
+- 在等待另一个 Agent 回复时监听新邮件。
+
+随包提供的 skill 会向 Agent 解释这些操作，因此 Agent 可以在工作过程中自行选择并调用合适的 action。
+
+一个典型流程如下：
 
 ```mermaid
 sequenceDiagram
@@ -26,193 +74,77 @@ sequenceDiagram
     B-->>A: Pi steer Session B 并触发一轮 turn
 ```
 
-## Pi Mail 提供什么
+### 静默异步通信
 
-| Agent 侧 | User 侧 |
-| --- | --- |
-| 一个紧凑的复合型 `mail` 工具，用于发现、发送/回复、收件箱、thread、等待与邮箱设置 | `/mail-ui` 用于查看邮箱、阅读项目邮件和主动发信 |
-| 支持多个 `To` / `Cc` 收件人，并能向已经下线的历史 session 持久投递 | 可以给一个、多个或全部当前活跃 session 发消息 |
-| 默认静默投递；只有明确使用 `notify: true` 时才要求立即提醒直接收件人 | Web UI 可直观看到待处理邮箱状态，Pi 底部也会显示紧凑的 `mail N` 状态 |
-| 支持 thread 回复、短消息 ID 引用和有限时长的 inbox wait | 可选的长期未处理邮件提醒，以及对 inactive mailbox 的人工删除管理 |
+普通邮件默认静默投递。收件方可以继续当前工作，在合适的时候再查看消息。Pi 会显示待处理数量，让邮件保持可见，但不会强制打断 Agent。
 
-运行时不依赖第三方 NPM 包。邮件数据只使用 Node 文件系统能力，存放在项目自己的 `.pi/mails/` 中。
+只要收件方的 mailbox 仍然存在，即使对应 session 暂时离线，邮件也会保留下来。一个 Agent 可以先留下结论或请求，等另一个 session 恢复后再处理。
 
-## Agent 怎么使用
+![Pi Mail 积压提醒与收件箱](./assets/notice.jpg)
 
-Pi 只向模型暴露一个统一的 `mail` 工具。更详细的用法约定放在随包安装的 `pi-mail` skill 中，因此工具定义可以保持精简。
+*静默直接邮件会显示为待处理邮件，Agent 通过 inbox 查看具体内容。*
 
-如果不知道收件人，Agent 可以先发现当前项目中活跃、允许被发现的其他 session：
+### 等待回复
 
-```text
-mail { action: "discover" }
-```
+如果 Agent 正在等待另一个 session 回复，可以使用 tool 中有限时长的 `wait` action。邮箱中已经有待处理邮件，或等待期间收到新邮件时，`wait` 都会返回，但不会消费邮件；Agent 随后再从 inbox 中读取内容。
 
-随后可以向一个或多个对象发信：
+![Pi Mail wait 等待展示](./assets/wait.jpg)
 
-```text
-mail {
-  action: "send",
-  to: ["reviewer"],
-  cc: ["frontend"],
-  subject: "API review",
-  body: "The response shape changed in commit abc123."
-}
-```
+*Agent 等待新邮件到达，然后从 inbox 中打开对应消息。*
 
-普通 peer mail 默认静默。设置 `notify: true` 后，收件方的 Pi 进程会插入一条 `pi-mail` custom message，以 `steer` 方式投递并触发一轮 turn。这样会立即提醒直接 `To` 收件人；`Cc` 收件人仍然保持静默。
+### 立即提醒
 
-```text
-mail {
-  action: "send",
-  to: ["reviewer"],
-  subject: "Review needed now",
-  body: "Please check the compatibility regression.",
-  notify: true
-}
-```
+遇到有时效性的消息时，Agent 可以使用 `notify: true` 发送。Pi 会立即把消息呈现给直接 `To` 收件人并触发一轮 turn；`Cc` 收件人仍然保持静默。
 
-邮箱操作通常是异步的。`inbox` 列表和 thread 只显示有界的正文预览，需要时再打开某一封完整邮件。若 Agent 正在等待回复，可以使用有限时长、且不会消费邮件的 `wait`：
+这条消息依然会被明确标记为来自另一个 Pi session，而不是用户授权或 permission。
 
-```text
-mail { action: "inbox", unpresented_only: true }
-mail { action: "wait", timeout_seconds: 60 }
-```
+![Pi Mail notify 运行展示](./assets/notify.jpg)
 
-如果收件 session 当前已经退出，只要它的 mailbox 仍然存在，发送仍会成功。发送结果会明确告诉 Agent 对方目前 inactive，邮件则保留在收件箱里，等该 session 以后 resume 时继续读取。
+*`notify: true` 会立即把 session 之间的邮件带入收件方当前的 Pi session。*
 
-来自其他 Pi session 的邮件会明确标记为 peer-session mail，不能当作用户授权。用户通过 Web UI 发送的邮件则会以真实 user message 身份进入目标 Pi session。
+## 用户可以做什么
 
-## User 怎么使用
+用户不需要直接操作 Agent 使用的 `mail` tool。Pi Mail 提供了用于观察和参与项目通信的命令。
 
-Pi Mail 也为用户提供项目级的邮箱视图。
+### 邮箱 Web UI
+
+在 Pi 中运行：
 
 ```text
 /mail-ui
-/mail-ui close
+```
 
+本地 Web UI 会显示项目邮箱、活跃和离线 session、待处理消息及最近通信。用户可以阅读邮件，也可以给一个、多个或全部活跃 session 发消息。
+
+通过 Web UI 发出的消息会以真实 user message 身份进入目标 Pi session，因此可以和其他 Agent 发来的消息明确区分。
+
+关闭界面：
+
+```text
+/mail-ui close
+```
+
+![Pi Mail Web UI 展示](./assets/web-ui.jpg)
+
+*在一个本地页面中查看项目通信，并以用户身份向 session 发消息。*
+
+### 邮件提醒
+
+当前 session 存在待处理邮件时，Pi 底部会显示紧凑的 `mail N` 状态。用户还可以设置：当一封静默直接邮件等待超过指定分钟数时发出提醒。
+
+```text
 /mail-reminder 30
 /mail-reminder off
 ```
 
-运行 `/mail-ui` 后，Pi Mail 会在 `127.0.0.1` 上启动带有随机 token 的本地服务并打开 Web UI。界面支持中英文、亮色/暗色主题，并展示每个邮箱对应的 Pi session name、alias、短 ID、在线状态、待处理 `To` / `Cc` 数量，以及最早一封待处理直接邮件已经等待了多久。
+提醒默认关闭。
 
-用户可以在 Web UI 中阅读项目邮件，也可以给一个 session、多个 session，或者全部当前活跃 session 发送消息。对于已经退出且确认不再需要的历史 mailbox，用户可以直接手动删除。删除只清理这个 session 自己的收件状态，不会重写仍然属于其他参与者的共享历史消息。
+## 范围与边界
 
-Web UI 是可选的，关闭它不会影响邮件投递。运行它的 Pi session 关闭时，本地服务会自动停止；用户也可以使用 `/mail-ui close` 或网页中的关闭动作手动停止服务。
-
-当当前 session 存在尚未呈现的收件邮件时，Pi 底部会显示类似 `mail 2` 的紧凑状态。用户还可以按需使用 `/mail-reminder <minutes>` 为当前邮箱开启“长时间未处理邮件”提醒；该能力默认关闭。
-
-## 项目范围与持久化
-
-Pi Mail 默认只在当前项目范围内发现和存储邮箱，不会让所有 Pi session 在全局互相暴露。对于 Git 项目，主 checkout 与 linked worktree 会共享同一个 canonical project root，因此位于不同 worktree 的 Pi session 仍然可以互相发现和通信。
-
-运行时数据位于：
-
-```text
-.pi/mails/
-├── .gitignore
-├── peers/
-├── presence/
-├── messages/
-└── mailboxes/
-```
-
-`.pi/mails/.gitignore` 会让这些运行数据保持未跟踪状态，同时不会修改项目根目录已有的 `.gitignore`。
-
-Pi session UUID 是不可变的邮箱身份。resume 同一个 Pi session 会继续使用原邮箱；fork 或 clone 如果产生了新的 Pi session UUID，就自然得到一个新的邮箱。历史 mailbox 会一直保留并可寻址，直到用户明确删除。
-
-每一封 canonical message 使用一个不可变 JSON 文件保存，recipient 自己的投递状态单独维护。Pi Mail 不设置自动历史上限，也不会在后台静默清理旧邮件。
-
-## 安装
-
-现在可以直接从公开的 GitHub 仓库安装：
-
-```bash
-pi install git:github.com/frostime/pi-mail
-```
-
-npm 包发布后，也可以使用更短的 registry 来源：
-
-```bash
-pi install npm:pi-mail
-```
-
-本地开发或测试：
-
-```bash
-pi install /absolute/path/to/pi-mail
-```
-
-Pi package 会以用户本机权限运行，因此安装第三方 extension 前应先检查源码。
-
-## 运行时展示
-
-一个最小的双 session 流程如下。下面的 alias 只是示例；实际使用时请以项目中 `discover` 返回的名称为准。
-
-Session A 先发现 Session B，再发送一封普通的静默 peer mail：
-
-```text
-mail { action: "discover" }
-# 1 session:
-# - reviewer (8ea109ceb705) · active
-
-mail {
-  action: "send",
-  to: ["reviewer"],
-  subject: "Review request",
-  body: "Please review the storage changes."
-}
-# Sent [2ece9830] "Review request" to reviewer (8ea109ceb705).
-```
-
-Session B 收到邮件时不会被强制打断。Pi 底部会显示待处理数量，session 可以检查收件箱并回复：
-
-```text
-# Pi footer: mail 1
-mail { action: "inbox", unpresented_only: true }
-# 1 inbox message:
-# [2ece9830] Review request · session-... (8ea109ceb705) · TO
-# Please review the storage changes.
-
-mail {
-  action: "send",
-  reply_to: "2ece9830",
-  body: "Reviewed. The storage changes look compatible."
-}
-```
-
-下面的截图来自一次实际运行。每次运行时，session ID、时间戳和 message ID 都会不同。
-
-![Pi Mail 积压提醒与收件箱](./assets/notice.jpg)
-
-*三封静默直接邮件累积后触发的提醒。提醒只报告数量；使用 `inbox` 查看邮件预览。*
-
-![Pi Mail wait 等待展示](./assets/wait.jpg)
-
-*有限时长的 `wait` 在新邮件到达后返回，但不会消费邮件。需要查看完整正文时，再使用带 `message_id` 的 `inbox`。*
-
-如果要查看用户侧流程，可以在任意一个活跃 Pi session 中运行 `/mail-ui`。页面集中展示项目状态、最近邮件、session 在线状态、待处理 `To` / `Cc` 数量，以及 **Compose as user** 写信表单。通过该表单发送的邮件会以真实 user message 身份进入目标 Pi session；`/mail-ui close` 会停止本地服务。
-
-![Pi Mail Web UI 展示](./assets/web-ui.jpg)
-
-*项目状态、最近邮件、用户发信表单和 session 邮箱集中在同一页面。*
-
-如果要展示立即提醒，再将发送请求改为 `notify: true`：
-
-```text
-mail {
-  action: "send",
-  to: ["reviewer"],
-  subject: "Review needed now",
-  body: "Please check the compatibility regression.",
-  notify: true
-}
-# Immediate notification requested for direct To recipients.
-```
-
-![Pi Mail notify runtime showcase](./assets/notify.jpg)
-
-*设置 `notify: true` 后，收件方的 Pi 进程会插入一条带有 peer 标识的 custom message，以 `steer` 方式投递并触发一轮 turn。*
+- 通信范围只限当前项目，包括同一 Git 项目的 linked worktree。
+- 邮件保存在本地，不依赖外部消息服务。
+- Pi Mail 只提供通信，不负责创建 team、分配任务、启动 Agent 或决定工作流程。
+- 来自其他 Agent 的消息不能视为用户确认或授权。
 
 ## 开发与详细参考
 
@@ -221,7 +153,7 @@ npm test
 npm run pack:check
 ```
 
-随包提供的 [`pi-mail` skill](./skills/pi-mail/SKILL.md) 记录模型需要了解的详细使用约定；[`extensions/pi-mail/SPEC.md`](./extensions/pi-mail/SPEC.md) 则记录未来实现演进时必须维持的兼容性与模块契约。
+随包提供的 [`pi-mail` skill](./skills/pi-mail/SKILL.md) 包含完整的 Agent 使用约定；[`extensions/pi-mail/SPEC.md`](./extensions/pi-mail/SPEC.md) 记录贡献者需要维护的模块契约。
 
 ## License
 
