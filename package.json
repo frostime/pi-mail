@@ -1,0 +1,45 @@
+{
+  "name": "pi-mail",
+  "version": "0.2.0",
+  "description": "A lightweight local mailbox and peer-discovery layer for independent Pi sessions.",
+  "author": "frostime",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "coding-agent",
+    "agent",
+    "mail",
+    "mailbox",
+    "multi-agent",
+    "communication"
+  ],
+  "files": [
+    "extensions/",
+    "skills/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/pi-mail/index.ts"
+    ],
+    "skills": [
+      "./skills/pi-mail"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "node --experimental-strip-types --test test/*.test.ts",
+    "pack:check": "npm pack --dry-run"
+  }
+}
