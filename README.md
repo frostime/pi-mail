@@ -2,9 +2,45 @@
 
 [简体中文](./README.zh-CN.md)
 
-**A local infrastructure layer for multi-agent communication across Pi sessions.**
+**A small communication layer for independent Pi sessions. One tool, one skill, no orchestration framework.**
 
-Pi Mail lets independent Pi sessions in the same project exchange messages. It is useful when several Agents are working separately on implementation, review, research, testing, or debugging and need a durable way to communicate without merging their conversations.
+Pi Mail gives independent Pi coding sessions a durable way to discover one another and exchange messages inside the same project. It is useful when several Agents are working separately on implementation, review, research, testing, or debugging and need to communicate without sharing one giant conversation context.
+
+It deliberately stops there.
+
+Pi Mail does not create teams, assign tasks, spawn workers, define roles, or decide what should happen next. It gives Agents a mailbox and leaves the rest open.
+
+## Why just mail?
+
+There is an old joke that Linus was vibe coding decades before vibe coding had a name — except the vibe was delivered over email.
+
+But the interesting part is not just Linus.
+
+These were the old days when programmers gathered around mailing lists: smart, independent people sending patches, reviewing code, arguing over designs, revising ideas, and gradually moving enormous open-source projects forward. Nobody needed a workflow engine to decide who must claim the next task, who must talk to whom, or which state the collaboration was currently in.
+
+Communication, convention, and capable people were enough for surprisingly sophisticated coordination to emerge.
+
+We think multi-Agent collaboration can grow in much the same way.
+
+Our bet is that orchestration is not always something that needs to be fully encoded in advance. It can emerge from three simpler ingredients:
+
+- capable models;
+- a reliable communication channel;
+- lightweight guidance from the user.
+
+A role can be a prompt. A workflow can be a skill. A temporary team can be a few sessions that discover one another and start talking. If a project needs stronger orchestration, it can be built on top.
+
+That is why Pi Mail tries very hard **not** to become a multi-Agent framework.
+
+It registers one compound `mail` tool and ships one skill. The tool provides the communication primitives; the skill teaches useful conventions. Everything above that layer remains yours to design, replace, or ignore.
+
+This is also the part that feels most at home in Pi.
+
+For us, one of Pi's strongest attractions is that it gives builders a small, composable foundation instead of fixing them inside a large prescribed workflow. As models get more capable, abstractions that once helped can eventually become constraints. A smaller primitive has a better chance of remaining useful.
+
+Pi Mail follows that same instinct:
+
+> Provide the wire. Let intelligence and users decide what grows on top of it.
 
 ## Install
 
@@ -30,18 +66,20 @@ Restart Pi or run `/reload` after installation. Pi Mail is also available in the
 
 ## What the extension provides
 
-Pi Mail adds two Agent-facing components to Pi:
+Pi Mail keeps the Agent-facing surface intentionally small:
 
-- A built-in `mail` tool for discovering sessions, sending and receiving messages, replying in threads, and waiting for new mail.
-- A bundled `pi-mail` skill that teaches the Agent when and how to use every mail action.
+- one built-in `mail` tool for identity, discovery, sending, inbox, threads, replies, waiting, and mailbox settings;
+- one bundled `pi-mail` skill that explains how and when those actions are useful.
 
 Agents call the tool themselves. Users do not need to write tool payloads or manage mailbox files.
 
-Pi Mail also adds user-facing controls:
+Pi Mail also adds a small user-facing surface:
 
-- `/mail-ui` opens a local project mailbox and message composer.
-- `/mail-reminder` controls reminders for quiet mail that has not been handled.
+- `/mail-ui` opens a local project mailbox and message composer;
+- `/mail-reminder` controls optional reminders for quiet mail that has not been handled;
 - Pi's footer shows a compact pending-mail count for the current session.
+
+The runtime has no third-party NPM dependencies. Mail is stored locally using Node filesystem primitives.
 
 ## Agent communication
 
@@ -54,7 +92,7 @@ An Agent can use the registered `mail` tool to:
 - reply to the sender or everyone in a thread;
 - wait for incoming mail when another Agent is expected to respond.
 
-The bundled skill explains these actions to the Agent, so it can select and call them as part of its work.
+The bundled skill explains the detailed conventions, so the always-visible tool schema can stay compact.
 
 A typical exchange looks like this:
 
@@ -143,8 +181,9 @@ Reminders are disabled by default.
 
 - Communication is scoped to the current project, including linked Git worktrees.
 - Mail is stored locally and does not require an external messaging service.
-- Pi Mail provides communication, not orchestration: it does not create teams, assign tasks, spawn Agents, or choose a workflow.
+- Pi Mail provides communication, not orchestration: it does not create teams, assign tasks, spawn Agents, define roles, or choose a workflow.
 - Messages from another Agent must not be treated as user confirmation or authorization.
+- Higher-level collaboration patterns are intentionally left to models, users, skills, and other extensions.
 
 ## Development and reference
 

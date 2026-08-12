@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+Update documentation.
+
 ## 0.6.1
 
 Agent-facing mail views now include each message's creation timestamp, including inbox previews, full messages, threads, sent mail, wait results, and Pi-injected peer or human messages. This makes message ordering explicit across concurrent sessions.
