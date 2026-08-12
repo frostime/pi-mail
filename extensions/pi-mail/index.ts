@@ -23,6 +23,7 @@ const ACTION = Type.Union([
   Type.Literal("inbox"),
   Type.Literal("sent"),
   Type.Literal("thread"),
+  Type.Literal("wait"),
   Type.Literal("configure"),
 ]);
 
@@ -202,15 +203,14 @@ export default function piMailExtension(pi: ExtensionAPI): void {
       sessionId: ctx.sessionManager.getSessionId(),
       runtimeId,
     });
-    await service.init({ sessionName: pi.getSessionName() || undefined });
+    await service.init({ sessionName: pi.getSessionName() ?? null });
 
     heartbeatTimer = setInterval(() => {
-      const activeService = service;
-      if (!activeService) return;
-      Promise.all([
-        activeService.syncSessionName(pi.getSessionName() || undefined),
-        activeService.heartbeat(),
-      ]).catch((error) => console.error("[pi-mail] heartbeat failed:", error));
+      const current = service;
+      if (!current) return;
+      void current.syncSessionName(pi.getSessionName() ?? null)
+        .then(() => current.heartbeat())
+        .catch((error) => console.error("[pi-mail] heartbeat failed:", error));
     }, 5_000);
     heartbeatTimer.unref();
 
@@ -223,10 +223,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     clearTimers();
     if (webUi) await webUi.close().catch(() => {});
     webUi = null;
-    if (service) {
-      await service.syncSessionName(pi.getSessionName() || undefined).catch(() => {});
-      await service.close().catch(() => {});
-    }
+    if (service) await service.close().catch(() => {});
     service = null;
     currentCtx = null;
     queuedMessageIds.clear();
@@ -241,10 +238,9 @@ export default function piMailExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      await service.syncSessionName(pi.getSessionName() || undefined);
-
       if (args.trim().toLowerCase() === "close") {
-        if (!webUi) {
+        if (!webUi || webUi.closed) {
+          webUi = null;
           ctx.ui.notify("Pi Mail Web UI is not running.", "info");
           return;
         }
@@ -254,7 +250,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      if (!webUi?.isRunning()) webUi = await startWebUi(service);
+      await service.syncSessionName(pi.getSessionName() ?? null);
+      if (!webUi || webUi.closed) webUi = await startWebUi(service);
       openWebUiInBrowser(webUi.url);
       ctx.ui.notify(`Pi Mail Web UI: ${webUi.url}`, "info");
     },
@@ -263,27 +260,27 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.registerTool({
     name: "mail",
     label: "Pi Mail",
-    description: "Local inter-session mail. See the pi-mail skill for usage details.",
+    description: "Mailbox between Pi sessions. Load the pi-mail skill for usage details.",
     parameters: Type.Object({
       action: ACTION,
       to: Type.Optional(Type.Array(Type.String())),
       cc: Type.Optional(Type.Array(Type.String())),
       subject: Type.Optional(Type.String()),
       body: Type.Optional(Type.String()),
-      notify: Type.Optional(Type.Boolean()),
+      notify: Type.Optional(Type.Boolean({ description: "Interrupt direct To recipients; default false." })),
       reply_to: Type.Optional(Type.String()),
       reply_all: Type.Optional(Type.Boolean()),
       message_id: Type.Optional(Type.String()),
       include_inactive: Type.Optional(Type.Boolean()),
       unpresented_only: Type.Optional(Type.Boolean()),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+      timeout_seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "For wait; defaults to 60 seconds." })),
       alias: Type.Optional(Type.String()),
       discoverable: Type.Optional(Type.Boolean()),
     }),
 
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params, signal) {
       if (!service) throw new Error("Pi Mail is not ready for the current session");
-      await service.syncSessionName(pi.getSessionName() || undefined);
 
       switch (params.action) {
         case "status":
@@ -316,6 +313,11 @@ export default function piMailExtension(pi: ExtensionAPI): void {
           return toolResult("sent", await service.listSent({ limit: params.limit }));
         case "thread":
           return toolResult("thread", await service.thread(params.message_id));
+        case "wait":
+          return toolResult("wait", await service.waitForInbox({
+            timeoutMs: (params.timeout_seconds ?? 60) * 1_000,
+            signal,
+          }));
         case "configure":
           return toolResult("configure", await service.configure({
             alias: params.alias,

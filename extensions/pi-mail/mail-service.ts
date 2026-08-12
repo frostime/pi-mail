@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { FsMailStore } from "./fs-store.ts";
-import { idMatchesReference, minimumReferenceChars, shortId } from "./identity.ts";
+import { matchesIdFragment, MIN_ID_FRAGMENT_LENGTH, shortMessageId, shortSessionId } from "./identity.ts";
 import { resolveMailRoot } from "./project-root.ts";
 import type {
   DeliveryRecord,
@@ -15,10 +15,15 @@ import type {
   RecipientKind,
   SentMessageSummary,
   SenderKind,
+  WaitResult,
 } from "./types.ts";
 
 const DEFAULT_PRESENCE_TTL_MS = 20_000;
 const DEFAULT_LIMIT = 20;
+const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
+const MAX_WAIT_TIMEOUT_MS = 300_000;
+const WAIT_POLL_INTERVAL_MS = 250;
+const WAIT_RESULT_LIMIT = 20;
 export const HUMAN_PRINCIPAL_ID = "human-local";
 export const HUMAN_PRINCIPAL_ALIAS = "user";
 
@@ -44,18 +49,18 @@ function nowIso(): string {
 }
 
 function defaultAlias(sessionId: string): string {
-  return `session-${shortId(sessionId)}`;
+  return `session-${shortSessionId(sessionId)}`;
 }
 
 function legacyDefaultAlias(sessionId: string): string {
   return `session-${sessionId.slice(0, 8)}`;
 }
 
-function normalizeSessionName(name: string | undefined): string | undefined {
+function normalizeSessionName(name: string | null | undefined): string | undefined {
   if (name == null) return undefined;
   const value = String(name).trim();
   if (!value) return undefined;
-  return value.slice(0, 200);
+  return value.length > 200 ? value.slice(0, 200) : value;
 }
 
 function normalizeAlias(alias: string | undefined): string | undefined {
@@ -87,6 +92,41 @@ function sortByCreatedAsc(a: { createdAt: string }, b: { createdAt: string }): n
   return a.createdAt.localeCompare(b.createdAt);
 }
 
+function boundedWaitTimeout(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return DEFAULT_WAIT_TIMEOUT_MS;
+  return Math.max(0, Math.min(Number(timeoutMs) || 0, MAX_WAIT_TIMEOUT_MS));
+}
+
+function abortError(): Error {
+  const error = new Error("mail wait aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+
+    function done(): void {
+      cleanup();
+      resolve();
+    }
+
+    function aborted(): void {
+      cleanup();
+      reject(abortError());
+    }
+
+    function cleanup(): void {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", aborted);
+    }
+
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
+}
+
 export class MailService {
   readonly cwd: string;
   readonly sessionId: string;
@@ -111,23 +151,23 @@ export class MailService {
     this.store = new FsMailStore(this.root);
   }
 
-  async init(options: { alias?: string; sessionName?: string; discoverable?: boolean } = {}): Promise<PeerRecord> {
+  async init(options: { alias?: string; discoverable?: boolean; sessionName?: string | null } = {}): Promise<PeerRecord> {
     await this.store.init();
 
     const timestamp = nowIso();
     const existing = await this.store.getPeer(this.sessionId);
+    const sessionName = options.sessionName === undefined
+      ? existing?.sessionName
+      : normalizeSessionName(options.sessionName);
     const requestedAlias = normalizeAlias(options.alias);
     const existingAlias = existing?.alias === legacyDefaultAlias(this.sessionId)
-      ? defaultAlias(this.sessionId)
+      ? undefined
       : existing?.alias;
-    const sessionName = Object.prototype.hasOwnProperty.call(options, "sessionName")
-      ? normalizeSessionName(options.sessionName)
-      : existing?.sessionName;
     const peer: PeerRecord = {
       version: 1,
       id: this.sessionId,
       alias: existingAlias ?? requestedAlias ?? defaultAlias(this.sessionId),
-      sessionName,
+      ...(sessionName ? { sessionName } : {}),
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
       createdAt: existing?.createdAt ?? timestamp,
@@ -137,23 +177,6 @@ export class MailService {
     await this.store.putPeer(peer);
     await this.heartbeat();
     return peer;
-  }
-
-
-  async syncSessionName(sessionName: string | undefined): Promise<PeerRecord | null> {
-    const peer = await this.store.getPeer(this.sessionId);
-    if (!peer) return null;
-
-    const nextName = normalizeSessionName(sessionName);
-    if (peer.sessionName === nextName) return peer;
-
-    const next: PeerRecord = {
-      ...peer,
-      sessionName: nextName,
-      updatedAt: nowIso(),
-    };
-    await this.store.putPeer(next);
-    return next;
   }
 
   async heartbeat(): Promise<void> {
@@ -168,6 +191,19 @@ export class MailService {
       startedAt: current?.startedAt ?? timestamp,
       lastSeenAt: timestamp,
     });
+  }
+
+  async syncSessionName(sessionName: string | null | undefined): Promise<void> {
+    const peer = await this.store.getPeer(this.sessionId);
+    if (!peer) return;
+
+    const nextName = normalizeSessionName(sessionName);
+    if ((peer.sessionName ?? undefined) === nextName) return;
+
+    const next = { ...peer, updatedAt: nowIso() };
+    if (nextName) next.sessionName = nextName;
+    else delete next.sessionName;
+    await this.store.putPeer(next);
   }
 
   async close(): Promise<void> {
@@ -235,9 +271,9 @@ export class MailService {
 
         return {
           id: peer.id,
-          shortId: shortId(peer.id),
+          shortId: shortSessionId(peer.id),
           alias: peer.alias,
-          sessionName: peer.sessionName,
+          sessionName: peer.sessionName ?? null,
           active: presences.length > 0,
           runtimeCount: presences.length,
           cwd: latest?.cwd ?? peer.cwd,
@@ -288,12 +324,11 @@ export class MailService {
     const peer = await this.store.getPeer(peerId);
     if (!peer || peer.deletedAt) throw new Error(`Unknown session mailbox "${address}"`);
 
-    const deletedAt = nowIso();
     await this.store.removeMailbox(peerId);
     await this.store.removeSessionPresence(peerId);
-    await this.store.putPeer({ ...peer, deletedAt, updatedAt: deletedAt });
+    await this.store.removePeer(peerId);
 
-    return { id: peer.id, shortId: shortId(peer.id), alias: peer.alias, sessionName: peer.sessionName };
+    return { id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias };
   }
 
   async listInbox(options: {
@@ -354,6 +389,54 @@ export class MailService {
     return this.store.updateDelivery(this.sessionId, messageId, { presentedAt: nowIso() });
   }
 
+  async waitForInbox(options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<WaitResult> {
+    const startedAt = Date.now();
+    const timeoutMs = boundedWaitTimeout(options.timeoutMs);
+
+    // Snapshot first, then inspect pending mail. This ordering closes the
+    // lost-wakeup gap: a delivery that lands between the two reads either
+    // appears as pending or is absent from the snapshot and is detected below.
+    const baseline = new Set(await this.store.listDeliveryIds(this.sessionId));
+    const pending = await this.listInbox({
+      unpresentedOnly: true,
+      limit: WAIT_RESULT_LIMIT,
+      oldestFirst: true,
+      markPresented: false,
+    }) as MailMessage[];
+
+    if (pending.length) {
+      return { reason: "pending", waitedMs: Date.now() - startedAt, messages: pending };
+    }
+
+    while (true) {
+      if (options.signal?.aborted) throw abortError();
+
+      const newIds = (await this.store.listDeliveryIds(this.sessionId))
+        .filter((messageId) => !baseline.has(messageId));
+
+      if (newIds.length) {
+        const messages: MailMessage[] = [];
+        for (const messageId of newIds.slice(0, WAIT_RESULT_LIMIT)) {
+          const delivery = await this.store.getDelivery(this.sessionId, messageId);
+          const message = await this.store.getMessage(messageId);
+          if (!delivery || !message) continue;
+          messages.push(await this.decorateMessage(message, delivery));
+        }
+        messages.sort(sortByCreatedAsc);
+        if (messages.length) {
+          return { reason: "new", waitedMs: Date.now() - startedAt, messages };
+        }
+      }
+
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= timeoutMs) {
+        return { reason: "timeout", waitedMs: elapsed, messages: [] };
+      }
+
+      await delay(Math.min(WAIT_POLL_INTERVAL_MS, timeoutMs - elapsed), options.signal);
+    }
+  }
+
   async listSent(options: { limit?: number } = {}): Promise<SentMessageSummary[]> {
     const messages = (await this.store.listMessages())
       .filter((message) => senderKindOf(message) === "session" && message.from === this.sessionId)
@@ -364,7 +447,7 @@ export class MailService {
     for (const message of messages) {
       output.push({
         id: message.id,
-        shortId: shortId(message.id),
+        shortId: shortMessageId(message.id),
         subject: message.subject,
         threadId: message.threadId,
         createdAt: message.createdAt,
@@ -415,9 +498,9 @@ export class MailService {
 
     return {
       id: this.sessionId,
-      shortId: shortId(this.sessionId),
+      shortId: shortSessionId(this.sessionId),
       alias: peer?.alias ?? defaultAlias(this.sessionId),
-      sessionName: peer?.sessionName,
+      sessionName: peer?.sessionName ?? null,
       discoverable: peer?.discoverable !== false,
       mailRoot: this.root,
       unpresented: {
@@ -517,20 +600,20 @@ export class MailService {
 
     if (await this.store.getMessage(query)) return query;
 
-    if (query.replaceAll("-", "").length < minimumReferenceChars()) {
-      throw new Error(`Unknown message "${query}". Short message references must be at least ${minimumReferenceChars()} characters.`);
+    if (query.replaceAll("-", "").length < MIN_ID_FRAGMENT_LENGTH) {
+      throw new Error(`Unknown message "${query}". Message ID fragments must be at least ${MIN_ID_FRAGMENT_LENGTH} characters.`);
     }
 
     const matches = (await this.store.listMessages())
-      .filter((message) => idMatchesReference(message.id, query));
+      .filter((message) => matchesIdFragment(message.id, query));
 
     if (matches.length === 1) return matches[0].id;
     if (matches.length > 1) {
       const candidates = matches
         .slice(0, 5)
-        .map((message) => `${shortId(message.id)} (${message.id})`)
+        .map((message) => `${shortMessageId(message.id)} (${message.id})`)
         .join(", ");
-      throw new Error(`Ambiguous message id reference "${query}". Candidates: ${candidates}`);
+      throw new Error(`Ambiguous message id fragment "${query}". Candidates: ${candidates}`);
     }
 
     throw new Error(`Unknown message "${query}". Use mail action=inbox, sent, or thread with a known message ID.`);
@@ -548,12 +631,14 @@ export class MailService {
     const exactId = peers.find((peer) => peer.id === query);
     if (exactId) return exactId.id;
 
-    if (query.replaceAll("-", "").length >= minimumReferenceChars()) {
-      const idMatches = peers.filter((peer) => idMatchesReference(peer.id, query));
+    if (query.replaceAll("-", "").length >= MIN_ID_FRAGMENT_LENGTH) {
+      const idMatches = peers.filter((peer) => matchesIdFragment(peer.id, query));
       if (idMatches.length === 1) return idMatches[0].id;
       if (idMatches.length > 1) {
-        const candidates = idMatches.map((peer) => `${peer.alias} (${shortId(peer.id)})`).join(", ");
-        throw new Error(`Ambiguous session id reference "${query}". Candidates: ${candidates}`);
+        const candidates = idMatches
+          .map((peer) => `${peer.alias} (${shortSessionId(peer.id)})`)
+          .join(", ");
+        throw new Error(`Ambiguous session id fragment "${query}". Candidates: ${candidates}`);
       }
     }
 
@@ -568,7 +653,7 @@ export class MailService {
       if (activeMatches.length === 1) return activeMatches[0].id;
 
       const candidates = aliasMatches
-        .map((peer) => `${peer.alias} (${shortId(peer.id)})`)
+        .map((peer) => `${peer.alias} (${shortSessionId(peer.id)})`)
         .join(", ");
       throw new Error(`Ambiguous alias "${query}". Candidates: ${candidates}`);
     }
@@ -594,15 +679,14 @@ export class MailService {
       const peer = peers.get(id);
       return {
         id,
-        shortId: shortId(id),
-        alias: peer?.alias ?? fallbackAlias ?? shortId(id),
-        sessionName: peer?.sessionName,
+        shortId: shortSessionId(id),
+        alias: peer?.alias ?? fallbackAlias ?? shortSessionId(id),
       };
     };
 
     return {
       id: message.id,
-      shortId: shortId(message.id),
+      shortId: shortMessageId(message.id),
       senderKind: senderKindOf(message),
       from: label(message.from, message.fromAlias),
       to: message.to.map((id) => label(id)),
@@ -633,13 +717,10 @@ export class MailService {
         const delivery = await this.store.getDelivery(recipientId, message.id);
         output.push({
           id: recipientId,
-          shortId: recipientId === HUMAN_PRINCIPAL_ID ? "human" : shortId(recipientId),
+          shortId: recipientId === HUMAN_PRINCIPAL_ID ? "human" : shortSessionId(recipientId),
           alias: recipientId === HUMAN_PRINCIPAL_ID
             ? HUMAN_PRINCIPAL_ALIAS
-            : peers.get(recipientId)?.alias ?? shortId(recipientId),
-          sessionName: recipientId === HUMAN_PRINCIPAL_ID
-            ? undefined
-            : peers.get(recipientId)?.sessionName,
+            : peers.get(recipientId)?.alias ?? shortSessionId(recipientId),
           kind,
           deliveredAt: delivery?.deliveredAt ?? null,
           presentedAt: delivery?.presentedAt ?? null,

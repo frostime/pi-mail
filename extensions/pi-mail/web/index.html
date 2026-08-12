@@ -88,8 +88,6 @@
     .peer, .message { border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; }
     .peer-line, .message-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .peer-name, .message-subject { font-weight: 650; }
-    .peer-identity { min-width: 0; }
-    .peer-secondary { margin-top: 2px; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
     .peer-actions { display: flex; align-items: center; gap: 8px; }
     .peer-actions .button { padding: 3px 7px; font-size: 11px; }
     .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; background: var(--muted); }
@@ -270,26 +268,9 @@
         return Object.entries(values).reduce((text, [key, value]) => text.replaceAll(`{${key}}`, String(value)), template);
       }
 
-      function peerTitle(peer) {
-        return peer.sessionName || peer.alias;
-      }
-
-      function peerSecondary(peer) {
-        const parts = [];
-        if (peer.sessionName && peer.alias !== peer.sessionName) parts.push(peer.alias);
-        parts.push(peer.shortId);
-        return parts.join(" · ");
-      }
-
-      function peerInline(peer) {
-        const title = peerTitle(peer);
-        const secondary = peerSecondary(peer);
-        return secondary ? `${title} · ${secondary}` : title;
-      }
-
       async function deleteMailbox(peer) {
         if (peer.active || peer.self) return;
-        if (!confirm(interpolate(t("deleteConfirm"), { name: peerInline(peer) }))) return;
+        if (!confirm(interpolate(t("deleteConfirm"), { name: `${peerDisplayName(peer)} · ${peerAddress(peer)}` }))) return;
         try {
           await api("/api/delete-mailbox", { method: "POST", body: JSON.stringify({ session_id: peer.id }) });
           $("compose-notice").className = "notice success";
@@ -301,8 +282,22 @@
         }
       }
 
+      function peerDisplayName(peer) {
+        return peer.sessionName || peer.alias;
+      }
+
+      function peerAddress(peer) {
+        return peer.sessionName && peer.sessionName !== peer.alias
+          ? `${peer.alias} · ${peer.shortId}`
+          : peer.shortId;
+      }
+
       function renderStatus(data) {
-        $("identity").textContent = peerInline(data.status);
+        const identityName = data.status.sessionName || data.status.alias;
+        const identityAddress = data.status.sessionName && data.status.sessionName !== data.status.alias
+          ? `${data.status.alias} · ${data.status.shortId}`
+          : data.status.shortId;
+        $("identity").textContent = `${identityName} · ${identityAddress}`;
         const metrics = [
           [t("activePeers"), data.status.activePeerCount],
           [t("unreadTo"), data.status.unpresented.to],
@@ -321,11 +316,9 @@
         $("peers").replaceChildren(...peers.map((peer) => {
           const card = element("div", "peer");
           const top = element("div", "peer-line");
-          const identity = element("div", "peer-identity");
           const name = element("div", "peer-name");
           const dot = element("span", `dot ${peer.active ? "active" : ""}`);
-          name.append(dot, document.createTextNode(`${peerTitle(peer)}${peer.self ? ` · ${t("current")}` : ""}`));
-          identity.append(name, element("div", "peer-secondary", peerSecondary(peer)));
+          name.append(dot, document.createTextNode(`${peerDisplayName(peer)}${peer.self ? ` · ${t("current")}` : ""}`));
           const actions = element("div", "peer-actions");
           actions.append(element("span", "muted", t(peer.active ? "active" : "inactive")));
           if (!peer.active && !peer.self) {
@@ -334,8 +327,12 @@
             remove.addEventListener("click", () => void deleteMailbox(peer));
             actions.append(remove);
           }
-          top.append(identity, actions);
-          card.append(top, element("div", "address", peer.cwd || ""));
+          top.append(name, actions);
+          card.append(
+            top,
+            element("div", "address", peerAddress(peer)),
+            element("div", "address", peer.cwd || ""),
+          );
           return card;
         }));
       }
@@ -346,10 +343,12 @@
         if (!peers.length) { $("recipient-grid").replaceChildren(element("div", "empty", t("noPeers"))); return; }
         $("recipient-grid").replaceChildren(...peers.map((peer) => {
           const row = element("div", "recipient");
-          const name = element("div", "peer-identity");
-          const title = element("div", "");
-          title.append(element("span", `dot ${peer.active ? "active" : ""}`), document.createTextNode(`${peerTitle(peer)}${peer.self ? ` · ${t("current")}` : ""}`));
-          name.append(title, element("div", "peer-secondary", peerSecondary(peer)));
+          const name = element("div", "");
+          name.append(
+            element("span", `dot ${peer.active ? "active" : ""}`),
+            document.createTextNode(`${peerDisplayName(peer)}${peer.self ? ` · ${t("current")}` : ""}`),
+            element("div", "address", peerAddress(peer)),
+          );
           const toLabel = element("label", "");
           const toInput = document.createElement("input");
           toInput.type = "checkbox"; toInput.dataset.kind = "to"; toInput.dataset.peer = peer.id; toInput.checked = selectedTo.has(peer.id);
@@ -371,15 +370,15 @@
           const card = element("article", "message");
           const head = element("div", "message-head");
           head.append(element("div", "message-subject", message.subject), element("div", "message-meta", formatTime(message.createdAt)));
-          const recipients = message.to.map(peerTitle).join(", ");
-          const cc = message.cc.length ? ` · Cc: ${message.cc.map(peerTitle).join(", ")}` : "";
-          const origin = message.senderKind === "human" ? t("user") : peerTitle(message.from);
+          const recipients = message.to.map((p) => p.alias).join(", ");
+          const cc = message.cc.length ? ` · Cc: ${message.cc.map((p) => p.alias).join(", ")}` : "";
+          const origin = message.senderKind === "human" ? t("user") : message.from.alias;
           const meta = element("div", "message-meta", `${origin} → ${recipients}${cc} · ${message.shortId}`);
           const body = element("div", "message-body", message.body);
           const chips = element("div", "chips");
           message.recipients.forEach((recipient) => {
             const stateText = recipient.presentedAt ? t("presented") : recipient.deliveredAt ? t("delivered") : t("pending");
-            chips.append(element("span", "chip", `${recipient.kind.toUpperCase()} ${peerTitle(recipient)}: ${stateText}`));
+            chips.append(element("span", "chip", `${recipient.kind.toUpperCase()} ${recipient.alias}: ${stateText}`));
           });
           card.append(head, meta, body, chips);
           return card;

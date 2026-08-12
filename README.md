@@ -1,6 +1,6 @@
 # Pi Mail
 
-Pi Mail is a lightweight local communication layer for independent [Pi](https://github.com/earendil-works/pi) sessions. Every Pi session gets a stable mailbox identity, active peers can be discovered inside the same project, and messages remain durable even when the recipient is offline. Pi Mail intentionally does not provide orchestration, scheduling, tasks, teams, or agent spawning.
+Pi Mail is a lightweight local communication layer for independent [Pi](https://github.com/earendil-works/pi) sessions. Every Pi session gets a stable mailbox identity, peers can discover one another inside the same project, and mail remains durable when a recipient is offline. Pi Mail intentionally does not provide orchestration, scheduling, tasks, teams, or agent spawning.
 
 The package exposes one compound LLM tool, `mail`, plus an optional `/mail-ui` command for the human supervisor. Runtime code has no third-party dependencies.
 
@@ -20,29 +20,9 @@ pi install /absolute/path/to/pi-mail
 
 Pi packages run with the user's local system permissions. Review extension source before installing third-party packages.
 
-## Extension layout
-
-```text
-extensions/pi-mail/
-├── index.ts
-├── types.ts
-├── attention-policy.ts
-├── identity.ts
-├── project-root.ts
-├── fs-store.ts
-├── mail-service.ts
-├── tool-presentation.ts
-├── web-ui.ts
-├── web/
-│   └── index.html
-└── SPEC.md
-```
-
-Pi loads `extensions/pi-mail/index.ts` directly; there is no build step.
-
 ## Mail tool
 
-The model sees one tool with an `action` field. Detailed usage rules live in the bundled `pi-mail` skill so tool-registration token cost stays small. Available actions are `status`, `discover`, `send`, `inbox`, `sent`, `thread`, and `configure`.
+The model sees one compact tool with an `action` field. Detailed behavior lives in the bundled `pi-mail` skill so the always-visible tool schema stays small. Actions are `status`, `discover`, `send`, `inbox`, `sent`, `thread`, `wait`, and `configure`.
 
 ```json
 { "action": "discover" }
@@ -58,29 +38,29 @@ The model sees one tool with an `action` field. Detailed usage rules live in the
 }
 ```
 
-Peer mail is quiet by default. Add `"notify": true` only when direct `To` recipients should be actively interrupted:
+Peer mail is quiet by default. Add `"notify": true` only when direct `To` recipients should be actively interrupted. `Cc` remains silent.
+
+`inbox` and `thread` use bounded body previews. `inbox` with a `message_id` reads one received message in full. Message references accept full IDs or unambiguous fragments.
+
+### Wait
+
+`wait` is a finite inbox wait, useful when another session is expected to reply:
 
 ```json
-{
-  "action": "send",
-  "to": ["reviewer"],
-  "subject": "Review needed now",
-  "body": "Please review commit abc123.",
-  "notify": true
-}
+{ "action": "wait", "timeout_seconds": 60 }
 ```
 
-Session and message references accept full IDs, the displayed 12-hex short IDs, or historical unambiguous prefixes of at least six characters. Short IDs use the UUID random tail rather than the time-heavy UUIDv7 prefix, so sessions started close together remain visually distinct. `inbox` without `message_id` and `thread` return compact body previews; `inbox` with `message_id` reads one received message in full.
+It first checks whether unpresented mail already exists and returns immediately if so. Otherwise it snapshots the current inbox and waits for any later delivery. This avoids the lost-wakeup case where a reply arrived just before the tool call. The default timeout is 60 seconds and the public maximum is 300 seconds. A timeout simply returns control to the agent. `wait` is non-consuming: it returns bounded previews without advancing `presentedAt`. After it wakes, use `inbox` to inspect the relevant message; if you do not, a later `wait` may intentionally return the same still-pending mail again.
 
-The reserved address `user` represents the local human supervisor. Human-origin Web UI messages enter Pi as genuine user messages; peer messages never do.
+## Identity and session names
 
-## Identity, offline delivery, and forks
+The immutable mailbox ID is the Pi session UUID. The human-facing short session ID uses the UUID tail rather than its leading portion, because nearby time-ordered session IDs may share a long prefix. A displayed short session ID is directly usable as an address. Earlier leading ID fragments remain accepted for compatibility.
 
-The immutable mailbox ID is the Pi session UUID. The mail alias and Pi conversation name are separate metadata: the alias is a mutable mail address, while the session name mirrors Pi's `/name` display name for human inspection. Normal discovery lists active, discoverable sessions; `include_inactive: true` also exposes historical mailboxes.
+The mailbox alias and Pi conversation/session name are separate metadata. The alias is a communication address; the Web UI also shows Pi's session name so historical and active sessions are easier for a human to recognize. The extension refreshes that name during its normal heartbeat.
 
-An inactive historical mailbox remains addressable. Sending to it persists the message normally, and the tool result explicitly reports that the recipient is inactive. When that Pi session is resumed, its mailbox is available again.
+Normal discovery lists active, discoverable sessions. `include_inactive: true` also exposes historical mailboxes. Sending to an inactive mailbox is valid; the sender-facing result explicitly reports that the recipient is inactive while confirming durable delivery.
 
-A Pi `/fork` or `/clone` that creates a new Pi session UUID also creates a new mailbox identity. Pi Mail does not copy the parent mailbox, record parent/child lineage, or automatically notify other sessions. A normal resume of the same session UUID reuses the existing mailbox.
+A Pi `/fork` or `/clone` that creates a new Pi session UUID gets a new mailbox identity. Pi Mail does not copy mailbox contents, create parent/child lineage, or automatically announce the fork. Resuming the same session UUID reuses its mailbox.
 
 ## Storage
 
@@ -97,21 +77,23 @@ Runtime data lives under the canonical project root:
 
 For a normal Git repository, the main checkout and linked worktrees share the same project store. `.pi/mails/.gitignore` contains `*` and `!.gitignore`; Pi Mail never edits the repository root `.gitignore`.
 
-Each canonical message is one immutable JSON file, while recipient delivery state is kept separately. This avoids shared append logs and cross-process JSONL locking. Pi Mail does not automatically delete old messages or impose a history cap.
+Each canonical message is one immutable JSON file. Recipient delivery state is stored separately, avoiding shared JSONL append locks. Pi Mail does not automatically delete old messages or impose a history cap.
 
 ## Notification behavior
 
-Durable delivery and model attention are separate. Ordinary peer mail enters the mailbox silently. A peer message with `notify: true` may steer/trigger direct `To` recipients; `Cc` stays silent. If ordinary unpresented mail accumulates, the Pi adapter sends a lightweight count-only reminder at three pending messages and again only when a later threshold bucket is reached. The reminder does not inject all message bodies or mark them as presented.
+Durable delivery and model attention are separate. Ordinary peer mail enters the mailbox silently. A peer message with `notify: true` may steer/trigger direct `To` recipients. When ordinary unpresented mail accumulates, Pi Mail sends only a lightweight count reminder at threshold buckets rather than injecting every body.
 
-`presentedAt` is not a read receipt. It only means the Pi integration crossed its presentation boundary; it does not prove that the model understood or acted on the message.
+`presentedAt` is not a read receipt. It means only that the Pi integration crossed its presentation boundary.
 
 ## Web UI
 
-Run `/mail-ui` to start a temporary token-protected server on `127.0.0.1`. The UI supports English and Chinese, automatic/light/dark themes, one or many To/Cc recipients, the current session, and **To: all active**. Session cards show the Pi conversation name when available, plus the mail alias and short ID. Session, recipient, and message lists scroll within their panels.
+Run `/mail-ui` to start a token-protected server on `127.0.0.1`. The UI supports English/Chinese, automatic/light/dark themes, multiple To/Cc recipients, the current session, and **To: all active**.
 
-The human supervisor can delete an **inactive** session mailbox from the Sessions panel. This removes that session's inbox delivery state and makes the mailbox no longer addressable. Shared canonical messages remain available to other participants so deleting one mailbox does not rewrite everyone else's history. If that same Pi session UUID is later resumed, it re-registers as a fresh mailbox identity with no reconstructed inbox state.
+Session cards and recipient rows show the Pi session name when available, with mailbox alias and short ID underneath. Inactive mailboxes can be deleted by the human supervisor. Deletion removes the peer record and recipient mailbox state immediately, so deleted sessions disappear from the compose recipient list. Shared canonical messages remain available to other participants. If the same Pi session UUID is later resumed, it registers again with an empty recipient inbox.
 
-Use `/mail-ui close` or the page's close button to stop the server. The UI server is also closed automatically when the Pi session that started it shuts down or is replaced; reopening `/mail-ui` after an in-page close starts a fresh server. Mail delivery itself does not depend on the Web UI.
+Use `/mail-ui close` or the page close button to stop the server. Pi also emits `session_shutdown` when the owning session exits, reloads, switches, or forks, and Pi Mail closes that session's Web UI during the shutdown handler. Mail delivery itself does not depend on the Web UI.
+
+The reserved address `user` represents the local human supervisor. Messages composed in the Web UI enter recipient Pi sessions as genuine user messages; peer mail never does.
 
 ## Development
 
@@ -122,7 +104,7 @@ npm test
 npm run pack:check
 ```
 
-For an end-to-end test, install the package locally, open two Pi sessions in the same repository or linked worktrees, discover/send between them, try both quiet and `notify: true` mail, then open `/mail-ui` to inspect history and human-origin messaging.
+For an end-to-end test, install the package locally, open two Pi sessions in the same repository or linked worktrees, test `discover`, quiet/notify `send`, `wait`, offline delivery, and `/mail-ui`.
 
 ## License
 

@@ -121,6 +121,10 @@ export class FsMailStore {
     return listJson(path.join(this.root, "peers"));
   }
 
+  async removePeer(peerId: string): Promise<void> {
+    await rm(this.peerFile(peerId), { force: true });
+  }
+
   async putPresence(presence: PresenceRecord): Promise<void> {
     await atomicWriteJson(
       this.presenceFile(presence.sessionId, presence.runtimeId),
@@ -197,6 +201,22 @@ export class FsMailStore {
   async listDeliveries(recipientId: string): Promise<DeliveryRecord[]> {
     assertSafeId(recipientId, "recipient id");
     return listJson(path.join(this.root, "mailboxes", recipientId));
+  }
+
+  async listDeliveryIds(recipientId: string): Promise<string[]> {
+    assertSafeId(recipientId, "recipient id");
+    const dir = path.join(this.root, "mailboxes", recipientId);
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return [];
+      throw error;
+    }
+
+    return names
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => name.slice(0, -".json".length));
   }
 
   async removeMailbox(recipientId: string): Promise<void> {

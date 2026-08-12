@@ -8,10 +8,10 @@ import type { MailService } from "./mail-service.ts";
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const UI_HOST = "127.0.0.1";
 
-export interface WebUiHandle {
+interface WebUiHandle {
   readonly url: string;
   readonly port: number;
-  isRunning(): boolean;
+  readonly closed: boolean;
   close(): Promise<void>;
 }
 
@@ -201,7 +201,9 @@ export async function startWebUi(service: MailService): Promise<WebUiHandle> {
   return {
     port: address.port,
     url: `http://${UI_HOST}:${address.port}/?token=${encodeURIComponent(token)}`,
-    isRunning: () => server.listening && !closing,
+    get closed() {
+      return closing || !server.listening;
+    },
     close,
   };
 }

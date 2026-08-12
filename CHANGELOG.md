@@ -1,12 +1,12 @@
 # Changelog
 
-## 0.5.0
+## 0.5.1
 
-Short IDs no longer use the leading eight characters of a session UUID. Pi session IDs are time-ordered UUIDs, so sessions created close together can share those prefixes; Pi Mail now displays a stable 12-hex suffix and accepts that short ID for both recipient and message references while preserving legacy prefix resolution. Default generated mail aliases migrate from the old prefix form when the session next registers.
+Session short IDs now use the random UUID tail instead of a fixed leading prefix. This avoids collisions between nearby time-ordered Pi session UUIDs; recipient resolution accepts both leading and trailing unambiguous ID fragments for compatibility. Legacy generated aliases such as `session-019ff5f7` are migrated to tail-based defaults on resume, while user-chosen aliases are preserved. Pi conversation/session names are now stored separately from mailbox aliases, refreshed by the extension heartbeat, and shown in the Web UI.
 
-Pi conversation names are now stored independently from mail aliases and surfaced in discovery/tool output and the Web UI. The extension synchronizes `/name` changes during its heartbeat without silently changing the mailbox address.
+Added `mail action=wait` with finite, abortable inbox-wait semantics. `wait` first snapshots the current inbox and checks already-pending unpresented mail before blocking; therefore mail that arrived just before the call returns immediately instead of creating a lost-wakeup deadlock. Otherwise any later delivery wakes the call. Wait previews are non-consuming and do not advance `presentedAt`, so existing human/notify delivery semantics are preserved and an ignored pending message remains visible to later waits. The default timeout is 60 seconds and the public maximum is 300 seconds.
 
-Web UI lifecycle handling is stricter: session shutdown still closes the server automatically, and a server closed from inside the page is now recognized as stopped so a later `/mail-ui` command starts a fresh instance instead of reopening a stale URL.
+Human mailbox deletion now physically removes the inactive peer record in addition to recipient state and presence, so deleted sessions disappear immediately from Web UI recipient choices. Pi Mail 0.4 tombstones remain compatible and continue to be filtered. The bundled skill was tightened around ID addressing, quiet-vs-notify behavior, offline delivery, and safe wait usage, while the always-visible tool description remains deliberately small.
 
 ## 0.4.0
 

@@ -1,17 +1,18 @@
 export type RecipientKind = "to" | "cc";
 export type SenderKind = "session" | "human";
+export type WaitReason = "pending" | "new" | "timeout";
 
 export interface PeerRecord {
   version: 1;
   id: string;
   alias: string;
-  /** Pi conversation display name; independent from the mutable mail alias. */
+  /** Pi's conversation/session display name. Independent from the mailbox alias. */
   sessionName?: string;
   cwd: string;
   discoverable: boolean;
   createdAt: string;
   updatedAt: string;
-  /** Tombstone set by the human mailbox administrator; init clears it on resume. */
+  /** Compatibility with Pi Mail 0.4 tombstones. New deletions remove the peer record. */
   deletedAt?: string;
 }
 
@@ -56,7 +57,6 @@ export interface PeerAddress {
   id: string;
   shortId: string;
   alias: string;
-  sessionName?: string;
 }
 
 export interface MailMessage {
@@ -75,12 +75,11 @@ export interface MailMessage {
   delivery?: Pick<DeliveryRecord, "kind" | "deliveredAt" | "presentedAt">;
 }
 
-
 export interface MailStatus {
   id: string;
   shortId: string;
   alias: string;
-  sessionName?: string;
+  sessionName: string | null;
   discoverable: boolean;
   mailRoot: string;
   unpresented: { to: number; cc: number };
@@ -88,6 +87,7 @@ export interface MailStatus {
 }
 
 export interface DiscoveredPeer extends PeerAddress {
+  sessionName: string | null;
   active: boolean;
   runtimeCount: number;
   cwd: string;
@@ -115,4 +115,10 @@ export interface SentMessageSummary {
 
 export interface ProjectMessageSummary extends MailMessage {
   recipients: SentRecipient[];
+}
+
+export interface WaitResult {
+  reason: WaitReason;
+  waitedMs: number;
+  messages: MailMessage[];
 }

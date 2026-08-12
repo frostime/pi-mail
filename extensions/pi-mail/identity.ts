@@ -1,37 +1,34 @@
-const COMPACT_ID_CHARS = 12;
-const MIN_REFERENCE_CHARS = 6;
+export const MIN_ID_FRAGMENT_LENGTH = 6;
+export const SESSION_SHORT_ID_LENGTH = 12;
+export const MESSAGE_SHORT_ID_LENGTH = 8;
 
-function normalizedId(value: string): string {
-  return value.replaceAll("-", "").toLowerCase();
+function compactId(id: string): string {
+  return id.replaceAll("-", "").toLowerCase();
 }
 
 /**
- * UUIDv7 prefixes encode time and therefore collide visually for sessions
- * created close together. Use the random tail for a stable display handle.
+ * Time-ordered session UUIDs can share a long leading prefix when sessions
+ * are created close together. Display the random tail instead.
  */
-export function shortId(id: string): string {
-  const compact = normalizedId(id);
-  if (compact.length <= COMPACT_ID_CHARS) return compact;
-  return compact.slice(-COMPACT_ID_CHARS);
+export function shortSessionId(id: string): string {
+  const compact = compactId(id);
+  return compact.slice(-SESSION_SHORT_ID_LENGTH);
 }
 
-export function minimumReferenceChars(): number {
-  return MIN_REFERENCE_CHARS;
+export function shortMessageId(id: string): string {
+  const compact = compactId(id);
+  return compact.slice(0, MESSAGE_SHORT_ID_LENGTH);
 }
 
 /**
- * Preserve historical prefix references while also accepting the displayed
- * suffix-based short ID introduced after UUIDv7 prefix collisions surfaced.
+ * Accept both leading and trailing fragments. Leading fragments preserve the
+ * addressing behavior from earlier Pi Mail releases; trailing fragments make
+ * the displayed session short ID directly usable as an address.
  */
-export function idMatchesReference(id: string, reference: string): boolean {
-  const query = reference.trim().toLowerCase();
-  if (!query) return false;
-  if (id.toLowerCase() === query) return true;
-  if (id.toLowerCase().startsWith(query)) return true;
+export function matchesIdFragment(id: string, fragment: string): boolean {
+  const query = compactId(fragment.trim());
+  if (query.length < MIN_ID_FRAGMENT_LENGTH) return false;
 
-  const compactId = normalizedId(id);
-  const compactQuery = normalizedId(query);
-  if (compactQuery.length < MIN_REFERENCE_CHARS) return false;
-
-  return compactId.startsWith(compactQuery) || compactId.endsWith(compactQuery);
+  const compact = compactId(id);
+  return compact.startsWith(query) || compact.endsWith(query);
 }

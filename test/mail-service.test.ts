@@ -9,6 +9,7 @@ import { HUMAN_PRINCIPAL_ID, MailService } from "../extensions/pi-mail/mail-serv
 import { mailboxNoticeBucket, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
 import { resolveProjectRoot } from "../extensions/pi-mail/project-root.ts";
 import { BODY_PREVIEW_CHARS, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
+import { shortSessionId } from "../extensions/pi-mail/identity.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
 
 async function makeServices() {
@@ -64,65 +65,57 @@ test("discovery is active-only by default but preserves historical peers", async
   );
 });
 
-test("UUIDv7 sessions created close together get distinct suffix-based short IDs", async () => {
+
+test("session short IDs use the random UUID tail and are valid recipient addresses", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-v7-"));
-  const first = new MailService({
-    cwd,
-    sessionId: "019ff5f7-12e9-71bf-850b-76732fe0a69c",
-    runtimeId: "runtime-v7-a",
-    presenceTtlMs: 60_000,
-  });
-  const second = new MailService({
-    cwd,
-    sessionId: "019ff5f7-323e-7f29-bbcd-bb4b63d4b781",
-    runtimeId: "runtime-v7-b",
-    presenceTtlMs: 60_000,
-  });
+  const firstId = "019ff5f7-12e9-71bf-850b-76732fe0a69c";
+  const secondId = "019ff5f7-323e-7f29-bbcd-bb4b63d4b781";
+  const first = new MailService({ cwd, sessionId: firstId, runtimeId: "runtime-v7-a", presenceTtlMs: 60_000 });
+  const second = new MailService({ cwd, sessionId: secondId, runtimeId: "runtime-v7-b", presenceTtlMs: 60_000 });
+  await first.init({ alias: "first" });
+  await second.init({ alias: "second" });
 
-  await first.init();
-  await second.init();
-  const peers = await first.listProjectSessions({ includeInactive: true });
-  const a = peers.find((peer) => peer.id === first.sessionId)!;
-  const b = peers.find((peer) => peer.id === second.sessionId)!;
+  assert.equal(shortSessionId(firstId), "76732fe0a69c");
+  assert.equal(shortSessionId(secondId), "bb4b63d4b781");
+  const peer = (await first.discover()).find((item) => item.id === secondId);
+  assert.equal(peer?.shortId, "bb4b63d4b781");
 
-  assert.equal(first.sessionId.slice(0, 8), second.sessionId.slice(0, 8));
-  assert.notEqual(a.shortId, b.shortId);
-  assert.equal(a.shortId, "76732fe0a69c");
-  assert.equal(b.shortId, "bb4b63d4b781");
-
-  const sent = await first.send({ to: [b.shortId], body: "Short session address works." });
-  assert.equal(sent.to[0].id, second.sessionId);
+  const sent = await first.send({ to: [peer!.shortId], body: "Addressed by displayed session short ID." });
+  assert.equal((await inbox(second))[0].id, sent.id);
 });
 
-test("legacy generated prefix aliases migrate when a session registers again", async () => {
-  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-alias-migrate-"));
+test("legacy timestamp-prefix default aliases migrate to tail-based defaults", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-alias-migration-"));
   const sessionId = "019ff5f7-12e9-71bf-850b-76732fe0a69c";
   const service = new MailService({ cwd, sessionId, runtimeId: "runtime-migrate", presenceTtlMs: 60_000 });
   await service.store.init();
+  const timestamp = new Date().toISOString();
   await service.store.putPeer({
     version: 1,
     id: sessionId,
     alias: "session-019ff5f7",
     cwd,
     discoverable: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: timestamp,
+    updatedAt: timestamp,
   });
 
   const peer = await service.init();
   assert.equal(peer.alias, "session-76732fe0a69c");
 });
 
-test("Pi session name is display metadata and does not overwrite the mail alias", async () => {
-  const { a } = await makeServices();
-  await a.syncSessionName("Refactor auth");
-  await a.configure({ alias: "backend" });
-  await a.syncSessionName("Refactor auth v2");
+test("Pi session names are tracked separately from mailbox aliases", async () => {
+  const { b } = await makeServices();
+  await b.syncSessionName("Review API compatibility");
 
-  const self = (await a.listProjectSessions({ includeInactive: true })).find((peer) => peer.self);
-  assert.equal(self?.alias, "backend");
-  assert.equal(self?.sessionName, "Refactor auth v2");
-  assert.equal((await a.status()).sessionName, "Refactor auth v2");
+  let status = await b.status();
+  assert.equal(status.alias, "bob");
+  assert.equal(status.sessionName, "Review API compatibility");
+
+  await b.syncSessionName("Review API v2");
+  status = await b.status();
+  assert.equal(status.alias, "bob");
+  assert.equal(status.sessionName, "Review API v2");
 });
 
 test("human supervisor session listing includes self and peer-hidden sessions", async () => {
@@ -185,7 +178,7 @@ test("sending to an inactive historical mailbox succeeds and reports it inactive
   assert.equal((await inbox(b))[0].id, message.id);
 });
 
-test("message references accept displayed short IDs and historical prefixes", async () => {
+test("message references accept unambiguous ID prefixes", async () => {
   const { a, b } = await makeServices();
 
   const first = await a.send({
@@ -197,7 +190,7 @@ test("message references accept displayed short IDs and historical prefixes", as
   const read = await b.listInbox({ messageId: first.shortId, markPresented: false }) as MailMessage;
   assert.equal(read.id, first.id);
 
-  const reply = await b.send({ replyTo: first.id.slice(0, 8), body: "Historical prefix resolved." });
+  const reply = await b.send({ replyTo: first.shortId, body: "Short ID resolved." });
   assert.equal(reply.inReplyTo, first.id);
   assert.equal((await a.thread(reply.shortId)).length, 2);
 });
@@ -270,6 +263,7 @@ test("human supervisor can delete only inactive mailboxes without erasing shared
   const deleted = await a.deleteProjectMailbox("bob");
   assert.equal(deleted.alias, "bob");
   assert.equal((await a.listProjectSessions({ includeInactive: true })).some((peer) => peer.id === b.sessionId), false);
+  assert.equal(await a.store.getPeer(b.sessionId), null);
   await assert.rejects(() => a.send({ to: ["bob"], body: "Should fail" }), /Unknown recipient/);
   assert.ok((await a.listSent()).some((item) => item.id === message.id));
 
@@ -293,6 +287,37 @@ test("a new session identity in the same project starts with an independent mail
 
   assert.equal((await inbox(fork)).length, 0);
   assert.ok((await fork.discover()).some((peer) => peer.id === b.sessionId));
+});
+
+test("wait returns immediately when unpresented mail already exists", async () => {
+  const { a, b } = await makeServices();
+  const sent = await a.send({ to: ["bob"], subject: "Already here", body: "Do not wait past this." });
+
+  const result = await b.waitForInbox({ timeoutMs: 1_000 });
+  assert.equal(result.reason, "pending");
+  assert.equal(result.messages[0].id, sent.id);
+  assert.ok(result.waitedMs < 500);
+  assert.equal((await b.store.getDelivery(b.sessionId, sent.id))?.presentedAt, null);
+});
+
+test("wait detects a delivery that arrives after waiting begins", async () => {
+  const { a, b } = await makeServices();
+  const waiting = b.waitForInbox({ timeoutMs: 1_000 });
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const sent = await a.send({ to: ["bob"], subject: "Later", body: "Arrived while waiting." });
+  const result = await waiting;
+
+  assert.equal(result.reason, "new");
+  assert.equal(result.messages[0].id, sent.id);
+});
+
+test("wait has a finite timeout and returns control", async () => {
+  const { b } = await makeServices();
+  const result = await b.waitForInbox({ timeoutMs: 40 });
+  assert.equal(result.reason, "timeout");
+  assert.deepEqual(result.messages, []);
+  assert.ok(result.waitedMs >= 30);
 });
 
 test("inbox and thread tool text use bounded body previews", async () => {
