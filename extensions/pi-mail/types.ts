@@ -12,6 +12,8 @@ export interface PeerRecord {
   discoverable: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Optional user-owned stale-mail reminder policy. Absent means disabled. */
+  reminderAfterMinutes?: number;
   /** Compatibility with Pi Mail 0.4 tombstones. New deletions remove the peer record. */
   deletedAt?: string;
 }
@@ -81,6 +83,7 @@ export interface MailStatus {
   alias: string;
   sessionName: string | null;
   discoverable: boolean;
+  reminderAfterMinutes: number | null;
   mailRoot: string;
   unpresented: { to: number; cc: number };
   activePeerCount: number;
@@ -94,6 +97,16 @@ export interface DiscoveredPeer extends PeerAddress {
   lastSeenAt: string | null;
   /** True only when an internal caller explicitly includes the current session. */
   self?: boolean;
+}
+
+
+export interface MailboxOverview extends DiscoveredPeer {
+  pending: {
+    to: number;
+    cc: number;
+    oldestToAt: string | null;
+  };
+  reminderAfterMinutes: number | null;
 }
 
 export interface SentRecipient extends PeerAddress {

@@ -81,7 +81,18 @@ Each canonical message is one immutable JSON file. Recipient delivery state is s
 
 ## Notification behavior
 
-Durable delivery and model attention are separate. Ordinary peer mail enters the mailbox silently. A peer message with `notify: true` may steer/trigger direct `To` recipients. When ordinary unpresented mail accumulates, Pi Mail sends only a lightweight count reminder at threshold buckets rather than injecting every body.
+Durable delivery and model attention are separate. Ordinary peer mail enters the mailbox silently. A peer message with `notify: true` may steer/trigger direct `To` recipients. When ordinary direct mail accumulates to three pending messages, Pi Mail sends a lightweight count-only reminder at threshold buckets rather than injecting every body. `Cc` does not trigger this backlog attention path.
+
+The human user may optionally enable a stale-mail reminder for the current mailbox:
+
+```text
+/mail-reminder 30
+/mail-reminder off
+```
+
+It is disabled by default. When enabled, one or two quiet direct `To` messages that remain unpresented for the configured age may trigger a count-only Pi turn. The reminder is a user-owned attention policy, not a mail protocol field and not an orchestration primitive. Web UI observation does not mark agent mail as presented or suppress this policy.
+
+The Pi footer shows a compact `mail N` status whenever the current session has unpresented inbox mail. The indicator is informational and disappears when the pending count returns to zero.
 
 `presentedAt` is not a read receipt. It means only that the Pi integration crossed its presentation boundary.
 
@@ -89,7 +100,7 @@ Durable delivery and model attention are separate. Ordinary peer mail enters the
 
 Run `/mail-ui` to start a token-protected server on `127.0.0.1`. The UI supports English/Chinese, automatic/light/dark themes, multiple To/Cc recipients, the current session, and **To: all active**.
 
-Session cards and recipient rows show the Pi session name when available, with mailbox alias and short ID underneath. Inactive mailboxes can be deleted by the human supervisor. Deletion removes the peer record and recipient mailbox state immediately, so deleted sessions disappear from the compose recipient list. Shared canonical messages remain available to other participants. If the same Pi session UUID is later resumed, it registers again with an empty recipient inbox.
+Session cards and recipient rows show the Pi session name when available, with mailbox alias and short ID underneath. Session cards also show pending To/Cc counts, the age of the oldest pending direct message, and any configured stale-mail reminder; mailboxes needing attention are sorted ahead of quiet mailboxes. Inactive mailboxes can be deleted by the human supervisor. Deletion removes the peer record and recipient mailbox state immediately, so deleted sessions disappear from the compose recipient list. Shared canonical messages remain available to other participants. If the same Pi session UUID is later resumed, it registers again with an empty recipient inbox.
 
 Use `/mail-ui close` or the page close button to stop the server. Pi also emits `session_shutdown` when the owning session exits, reloads, switches, or forks, and Pi Mail closes that session's Web UI during the shutdown handler. Mail delivery itself does not depend on the Web UI.
 

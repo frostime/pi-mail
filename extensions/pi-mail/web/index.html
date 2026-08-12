@@ -79,13 +79,14 @@
     .panel-head h2 { margin: 0; font-size: 16px; }
     .panel-body { padding: 16px 17px; }
     .muted { color: var(--muted); }
-    .status-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .status-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     .metric { padding: 12px; border-radius: 10px; background: var(--panel-2); }
     .metric strong { display: block; font-size: 18px; margin-top: 2px; }
     .peer-list, .message-list { display: grid; gap: 9px; }
     .peer-list { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
     .message-list { max-height: min(68vh, 760px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
     .peer, .message { border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; }
+    .peer.has-mail { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
     .peer-line, .message-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .peer-name, .message-subject { font-weight: 650; }
     .peer-actions { display: flex; align-items: center; gap: 8px; }
@@ -118,6 +119,7 @@
     .message-body { white-space: pre-wrap; margin: 10px 0 0; padding-top: 9px; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
     .chips { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 8px; }
     .chip { background: var(--panel-2); color: var(--muted); border-radius: 999px; padding: 2px 7px; font-size: 11px; }
+    .chip.attention { background: var(--accent-soft); color: var(--accent); }
     .empty { padding: 12px; color: var(--muted); text-align: center; }
     .closed { max-width: 520px; margin: 18vh auto; text-align: center; padding: 28px; }
     [hidden] { display: none !important; }
@@ -196,25 +198,25 @@
           subtitle: "Local mailbox view for this project.", themeAuto: "Theme: Auto", themeLight: "Theme: Light", themeDark: "Theme: Dark",
           refresh: "Refresh", closeServer: "Close UI server", overview: "Overview", messages: "Recent messages", messagesHint: "latest 100",
           compose: "Compose as user", humanOrigin: "human origin", recipients: "Recipients", recipientHint: "choose To / Cc", subject: "Subject",
-          body: "Message", send: "Send", peers: "Sessions", activePeers: "Active peers", unreadTo: "Unpresented To", unreadCc: "Unpresented Cc",
+          body: "Message", send: "Send", peers: "Sessions", activePeers: "Active peers", unreadTo: "Unpresented To", unreadCc: "Unpresented Cc", reminder: "Stale reminder", reminderOff: "Off",
           active: "active", inactive: "historical", noPeers: "No sessions found.", noMessages: "No messages yet.", to: "To", cc: "Cc",
           sendSuccess: "Message delivered.", chooseRecipient: "Choose at least one To recipient.", sendFailed: "Send failed", loadFailed: "Failed to load mail state",
           delivered: "delivered", presented: "presented", pending: "not presented", user: "user", closeConfirm: "Close the Pi Mail Web UI server?",
           closed: "The Web UI server has been closed. You can close this tab.", current: "current", selectActive: "To: all active", clearRecipients: "Clear",
           deleteMailbox: "Delete mailbox", deleteConfirm: "Delete mailbox for {name}? Its inbox state will be removed. Shared project messages remain available to other participants.",
-          deleteSuccess: "Mailbox deleted.", deleteFailed: "Delete failed"
+          deleteSuccess: "Mailbox deleted.", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest", reminderEvery: "remind after {minutes}m"
         },
         zh: {
           subtitle: "当前项目的本地邮箱监督视图。", themeAuto: "主题：自动", themeLight: "主题：亮色", themeDark: "主题：暗色",
           refresh: "刷新", closeServer: "关闭 UI 服务", overview: "概览", messages: "最近邮件", messagesHint: "最近 100 封",
           compose: "以用户身份写信", humanOrigin: "用户来源", recipients: "收件人", recipientHint: "选择 To / Cc", subject: "主题",
-          body: "正文", send: "发送", peers: "Sessions", activePeers: "活跃端点", unreadTo: "未呈现 To", unreadCc: "未呈现 Cc",
+          body: "正文", send: "发送", peers: "Sessions", activePeers: "活跃端点", unreadTo: "未呈现 To", unreadCc: "未呈现 Cc", reminder: "滞留提醒", reminderOff: "关闭",
           active: "活跃", inactive: "历史", noPeers: "当前没有可显示的 session。", noMessages: "还没有邮件。", to: "To", cc: "Cc",
           sendSuccess: "邮件已投递。", chooseRecipient: "至少选择一个 To 收件人。", sendFailed: "发送失败", loadFailed: "加载邮箱状态失败",
           delivered: "已投递", presented: "已呈现", pending: "未呈现", user: "用户", closeConfirm: "确定关闭 Pi Mail Web UI 服务？",
           closed: "Web UI 服务已关闭，可以关闭此页面。", current: "当前", selectActive: "To：全部活跃", clearRecipients: "清空",
           deleteMailbox: "删除邮箱", deleteConfirm: "确定删除 {name} 的邮箱吗？该 session 的收件箱状态会被移除；与其他参与者共享的项目邮件仍会保留。",
-          deleteSuccess: "邮箱已删除。", deleteFailed: "删除失败"
+          deleteSuccess: "邮箱已删除。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久", reminderEvery: "{minutes} 分钟后提醒"
         }
       };
 
@@ -232,6 +234,14 @@
       const t = (key) => translations[language][key] || key;
       const escapeText = (value) => String(value ?? "");
       const formatTime = (value) => value ? new Intl.DateTimeFormat(language === "zh" ? "zh-CN" : "en-US", { dateStyle: "short", timeStyle: "medium" }).format(new Date(value)) : "—";
+      const formatAge = (value) => {
+        if (!value) return "—";
+        const minutes = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 60000));
+        if (minutes < 60) return `${minutes}m`;
+        const hours = Math.floor(minutes / 60);
+        if (hours < 48) return `${hours}h`;
+        return `${Math.floor(hours / 24)}d`;
+      };
 
       function applyLanguage() {
         document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
@@ -301,7 +311,8 @@
         const metrics = [
           [t("activePeers"), data.status.activePeerCount],
           [t("unreadTo"), data.status.unpresented.to],
-          [t("unreadCc"), data.status.unpresented.cc]
+          [t("unreadCc"), data.status.unpresented.cc],
+          [t("reminder"), data.status.reminderAfterMinutes == null ? t("reminderOff") : `${data.status.reminderAfterMinutes}m`]
         ];
         $("status").replaceChildren(...metrics.map(([label, value]) => {
           const card = element("div", "metric");
@@ -314,7 +325,9 @@
         $("peer-count").textContent = String(peers.length);
         if (!peers.length) { $("peers").replaceChildren(element("div", "empty", t("noPeers"))); return; }
         $("peers").replaceChildren(...peers.map((peer) => {
-          const card = element("div", "peer");
+          const pendingTo = peer.pending?.to || 0;
+          const pendingCc = peer.pending?.cc || 0;
+          const card = element("div", `peer ${pendingTo + pendingCc > 0 ? "has-mail" : ""}`);
           const top = element("div", "peer-line");
           const name = element("div", "peer-name");
           const dot = element("span", `dot ${peer.active ? "active" : ""}`);
@@ -328,11 +341,21 @@
             actions.append(remove);
           }
           top.append(name, actions);
+
+          const chips = element("div", "chips");
+          if (pendingTo > 0) chips.append(element("span", "chip attention", `${t("waitingTo")}: ${pendingTo}`));
+          if (pendingCc > 0) chips.append(element("span", "chip", `${t("waitingCc")}: ${pendingCc}`));
+          if (peer.pending?.oldestToAt) chips.append(element("span", "chip", `${t("oldest")}: ${formatAge(peer.pending.oldestToAt)}`));
+          if (peer.reminderAfterMinutes != null) {
+            chips.append(element("span", "chip", interpolate(t("reminderEvery"), { minutes: peer.reminderAfterMinutes })));
+          }
+
           card.append(
             top,
             element("div", "address", peerAddress(peer)),
             element("div", "address", peer.cwd || ""),
           );
+          if (chips.childNodes.length) card.append(chips);
           return card;
         }));
       }

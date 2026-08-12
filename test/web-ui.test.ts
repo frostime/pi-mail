@@ -34,14 +34,20 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.match(html, /To: all active/);
     assert.match(html, /Delete mailbox/);
     assert.match(html, /删除邮箱/);
+    assert.match(html, /Stale reminder/);
+    assert.match(html, /滞留提醒/);
+    assert.match(html, /To waiting/);
 
     const { base, headers } = authorization(ui.url);
     assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
-    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; self?: boolean; sessionName?: string | null }> };
+    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as {
+      peers: Array<{ id: string; self?: boolean; sessionName?: string | null; pending?: { to: number; cc: number }; reminderAfterMinutes?: number | null }>;
+    };
     assert.equal(state.peers.length, 2);
     assert.equal(state.peers.filter((peer) => peer.self).length, 1);
     assert.equal(state.peers.find((peer) => peer.id === b.sessionId)?.sessionName, "Review worktree");
+    assert.deepEqual(state.peers.find((peer) => peer.id === b.sessionId)?.pending, { to: 0, cc: 0, oldestToAt: null });
 
     const sendResponse = await fetch(`${base}/api/send`, {
       method: "POST",
@@ -55,6 +61,9 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.equal(aInbox[0].senderKind, "human");
     assert.equal(bInbox[0].senderKind, "human");
     assert.equal(bInbox[0].subject, "From Web UI");
+
+    const afterSend = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; pending: { to: number; cc: number } }> };
+    assert.equal(afterSend.peers.find((peer) => peer.id === b.sessionId)?.pending.to, 1);
 
     await b.close();
     const deleteResponse = await fetch(`${base}/api/delete-mailbox`, {

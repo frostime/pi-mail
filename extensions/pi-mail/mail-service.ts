@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 
 import { FsMailStore } from "./fs-store.ts";
+import { normalizeReminderMinutes } from "./attention-policy.ts";
 import { matchesIdFragment, MIN_ID_FRAGMENT_LENGTH, shortMessageId, shortSessionId } from "./identity.ts";
 import { resolveMailRoot } from "./project-root.ts";
 import type {
   DeliveryRecord,
   DiscoveredPeer,
   MailMessage,
+  MailboxOverview,
   MailStatus,
   MessageRecord,
   PeerAddress,
@@ -170,6 +172,7 @@ export class MailService {
       ...(sessionName ? { sessionName } : {}),
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
+      ...(existing?.reminderAfterMinutes ? { reminderAfterMinutes: existing.reminderAfterMinutes } : {}),
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -227,6 +230,23 @@ export class MailService {
     return next;
   }
 
+  async configureReminder(reminderAfterMinutes: number | null): Promise<PeerRecord> {
+    const peer = await this.store.getPeer(this.sessionId);
+    if (!peer) throw new Error("Current session is not registered");
+
+    const normalized = normalizeReminderMinutes(reminderAfterMinutes);
+    const next: PeerRecord = { ...peer, updatedAt: nowIso() };
+    if (normalized == null) delete next.reminderAfterMinutes;
+    else next.reminderAfterMinutes = normalized;
+
+    await this.store.putPeer(next);
+    return next;
+  }
+
+  async reminderAfterMinutes(): Promise<number | null> {
+    return normalizeReminderMinutes((await this.store.getPeer(this.sessionId))?.reminderAfterMinutes);
+  }
+
   async discover(options: { includeInactive?: boolean } = {}): Promise<DiscoveredPeer[]> {
     return this.listSessions({
       includeInactive: options.includeInactive ?? false,
@@ -240,6 +260,42 @@ export class MailService {
       includeInactive: options.includeInactive ?? true,
       includeSelf: true,
       includeUndiscoverable: true,
+    });
+  }
+
+  async listProjectMailboxes(options: { includeInactive?: boolean } = {}): Promise<MailboxOverview[]> {
+    const sessions = await this.listProjectSessions(options);
+    const peers = await this.peerMap();
+    const output: MailboxOverview[] = [];
+
+    for (const session of sessions) {
+      const deliveries = await this.store.listDeliveries(session.id);
+      const pending = deliveries.filter((delivery) => !delivery.presentedAt);
+      const pendingTo = pending.filter((delivery) => delivery.kind === "to");
+      const oldestToAt = pendingTo
+        .map((delivery) => delivery.deliveredAt)
+        .filter(Boolean)
+        .sort()[0] ?? null;
+
+      output.push({
+        ...session,
+        pending: {
+          to: pendingTo.length,
+          cc: pending.filter((delivery) => delivery.kind === "cc").length,
+          oldestToAt,
+        },
+        reminderAfterMinutes: normalizeReminderMinutes(peers.get(session.id)?.reminderAfterMinutes),
+      });
+    }
+
+    return output.sort((a, b) => {
+      const aPending = a.pending.to + a.pending.cc;
+      const bPending = b.pending.to + b.pending.cc;
+      if ((a.pending.to > 0) !== (b.pending.to > 0)) return a.pending.to > 0 ? -1 : 1;
+      if ((aPending > 0) !== (bPending > 0)) return aPending > 0 ? -1 : 1;
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      if (a.self !== b.self) return a.self ? -1 : 1;
+      return a.alias.localeCompare(b.alias);
     });
   }
 
@@ -502,6 +558,7 @@ export class MailService {
       alias: peer?.alias ?? defaultAlias(this.sessionId),
       sessionName: peer?.sessionName ?? null,
       discoverable: peer?.discoverable !== false,
+      reminderAfterMinutes: normalizeReminderMinutes(peer?.reminderAfterMinutes),
       mailRoot: this.root,
       unpresented: {
         to: inbox.filter((item) => item.delivery?.kind === "to").length,

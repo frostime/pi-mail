@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+Added an optional stale-mail reminder policy for the current mailbox. It is disabled by default and controlled by the human user with `/mail-reminder off|<minutes>` (1-1440 minutes). The reminder applies only to quiet, unpresented direct `To` mail; it does not wake for `Cc`, explicit `notify: true` mail, human-origin mail, or already-presented messages. It is intentionally an adapter-level attention policy rather than a mail protocol field or orchestration feature. Existing three-message backlog notices now count only direct `To` mail, preventing informational Cc traffic from waking a session.
+
+The Pi footer now exposes a compact `mail N` indicator whenever the current session has unpresented inbox entries. This uses Pi's extension status slot and does not mutate mailbox state.
+
+The Web UI now exposes per-session mailbox health directly in the session list: pending To/Cc counts, oldest pending direct-mail age, and configured stale-reminder policy. Mailboxes needing attention are sorted ahead of quiet mailboxes. The supervisor view remains observational and does not mark agent deliveries as presented.
+
 ## 0.5.1
 
 Session short IDs now use the random UUID tail instead of a fixed leading prefix. This avoids collisions between nearby time-ordered Pi session UUIDs; recipient resolution accepts both leading and trailing unambiguous ID fragments for compatibility. Legacy generated aliases such as `session-019ff5f7` are migrated to tail-based defaults on resume, while user-chosen aliases are preserved. Pi conversation/session names are now stored separately from mailbox aliases, refreshed by the extension heartbeat, and shown in the Web UI.

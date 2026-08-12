@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { HUMAN_PRINCIPAL_ID, MailService } from "../extensions/pi-mail/mail-service.ts";
-import { mailboxNoticeBucket, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
+import { isOverdueDirectMail, mailboxNoticeBucket, normalizeReminderMinutes, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
 import { resolveProjectRoot } from "../extensions/pi-mail/project-root.ts";
 import { BODY_PREVIEW_CHARS, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
 import { shortSessionId } from "../extensions/pi-mail/identity.ts";
@@ -388,4 +388,52 @@ test("linked Git worktrees resolve to one canonical project root", async (t) => 
 
   assert.equal(resolveProjectRoot(repo), path.resolve(repo));
   assert.equal(resolveProjectRoot(worktree), path.resolve(repo));
+});
+
+
+test("stale-mail reminder is opt-in, persisted, and only applies to quiet direct mail", async () => {
+  const { cwd, a, b } = await makeServices();
+  assert.equal(await b.reminderAfterMinutes(), null);
+
+  await b.configureReminder(30);
+  assert.equal(await b.reminderAfterMinutes(), 30);
+
+  const sent = await a.send({ to: ["bob"], body: "quiet direct" });
+  const delivery = await b.store.getDelivery(b.sessionId, sent.id);
+  assert.ok(delivery);
+  const oldDeliveredAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  await b.store.putDelivery({ ...delivery!, deliveredAt: oldDeliveredAt });
+  const quiet = await b.listInbox({ messageId: sent.id, markPresented: false }) as MailMessage;
+  assert.equal(isOverdueDirectMail(quiet, 30), true);
+
+  const notifying = await a.send({ to: ["bob"], body: "urgent", notify: true });
+  const notifyingDelivery = await b.store.getDelivery(b.sessionId, notifying.id);
+  await b.store.putDelivery({ ...notifyingDelivery!, deliveredAt: oldDeliveredAt });
+  const notifyingMail = await b.listInbox({ messageId: notifying.id, markPresented: false }) as MailMessage;
+  assert.equal(isOverdueDirectMail(notifyingMail, 30), false);
+
+  const resumed = new MailService({ cwd, sessionId: b.sessionId, runtimeId: "runtime-b-reminder-resume", presenceTtlMs: 60_000 });
+  await resumed.init();
+  assert.equal(await resumed.reminderAfterMinutes(), 30);
+  await resumed.configureReminder(null);
+  assert.equal(await resumed.reminderAfterMinutes(), null);
+  assert.equal(normalizeReminderMinutes(0), null);
+});
+
+test("project mailbox overview exposes pending To/Cc state without marking mail presented", async () => {
+  const { a, b, c } = await makeServices();
+  const direct = await a.send({ to: ["bob"], cc: ["carol"], body: "state" });
+  await b.configureReminder(30);
+
+  const overviews = await a.listProjectMailboxes({ includeInactive: true });
+  const bob = overviews.find((mailbox) => mailbox.id === b.sessionId);
+  const carol = overviews.find((mailbox) => mailbox.id === c.sessionId);
+  assert.equal(bob?.pending.to, 1);
+  assert.equal(bob?.pending.cc, 0);
+  assert.ok(bob?.pending.oldestToAt);
+  assert.equal(bob?.reminderAfterMinutes, 30);
+  assert.equal(carol?.pending.to, 0);
+  assert.equal(carol?.pending.cc, 1);
+  assert.equal(carol?.pending.oldestToAt, null);
+  assert.equal((await b.store.getDelivery(b.sessionId, direct.id))?.presentedAt, null);
 });

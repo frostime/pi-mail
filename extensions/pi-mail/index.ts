@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-import { mailboxNoticeBucket, shouldInterruptForPeerMail } from "./attention-policy.ts";
+import { isOverdueDirectMail, MAILBOX_NOTICE_THRESHOLD, mailboxNoticeBucket, shouldInterruptForPeerMail } from "./attention-policy.ts";
 import { HUMAN_PRINCIPAL_ID, MailService } from "./mail-service.ts";
 import {
   collapsedResultLabel,
@@ -82,6 +82,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   let webUi: Awaited<ReturnType<typeof startWebUi>> | null = null;
   let processingInbox = false;
   let lastMailboxNoticeBucket = 0;
+  let staleReminderSent = false;
   const queuedMessageIds = new Set<string>();
 
   function clearTimers(): void {
@@ -155,6 +156,40 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     );
   }
 
+
+  function refreshFooterStatus(pendingTo: number, pendingCc: number): void {
+    if (!currentCtx) return;
+    const total = pendingTo + pendingCc;
+    currentCtx.ui.setStatus("pi-mail", total > 0 ? `mail ${total}` : undefined);
+  }
+
+  async function maybeNotifyStaleMailbox(pendingDirect: MailMessage[]): Promise<void> {
+    if (!service) return;
+    const reminderAfterMinutes = await service.reminderAfterMinutes();
+    if (reminderAfterMinutes == null || pendingDirect.length === 0 || pendingDirect.length >= MAILBOX_NOTICE_THRESHOLD) {
+      staleReminderSent = false;
+      return;
+    }
+
+    const overdue = pendingDirect.filter((mail) => isOverdueDirectMail(mail, reminderAfterMinutes));
+    if (overdue.length === 0) {
+      staleReminderSent = false;
+      return;
+    }
+    if (staleReminderSent) return;
+
+    staleReminderSent = true;
+    pi.sendMessage(
+      {
+        customType: "pi-mail-reminder",
+        content: `Pi Mail: ${overdue.length} direct message${overdue.length === 1 ? " has" : "s have"} been waiting for at least ${reminderAfterMinutes} minute${reminderAfterMinutes === 1 ? "" : "s"}. Use the mail tool to review your inbox when appropriate.`,
+        display: true,
+        details: { pendingCount: overdue.length, reminderAfterMinutes },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  }
+
   async function processIncoming(): Promise<void> {
     if (!service || processingInbox) return;
     processingInbox = true;
@@ -179,12 +214,19 @@ export default function piMailExtension(pi: ExtensionAPI): void {
         }
       }
 
-      const silentPending = pending.filter((mail) =>
+      const silentDirectPending = pending.filter((mail) =>
         mail.senderKind === "session"
+        && mail.delivery?.kind === "to"
         && !shouldInterruptForPeerMail(mail)
         && !queuedMessageIds.has(mail.id)
       );
-      maybeNotifyMailboxBacklog(silentPending.length);
+      const pendingCc = pending.filter((mail) => mail.delivery?.kind === "cc").length;
+      maybeNotifyMailboxBacklog(silentDirectPending.length);
+      await maybeNotifyStaleMailbox(silentDirectPending);
+      refreshFooterStatus(
+        pending.filter((mail) => mail.delivery?.kind === "to").length,
+        pendingCc,
+      );
     } catch (error) {
       console.error("[pi-mail] incoming delivery failed:", error);
     } finally {
@@ -196,6 +238,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     clearTimers();
     queuedMessageIds.clear();
     lastMailboxNoticeBucket = 0;
+    staleReminderSent = false;
     currentCtx = ctx;
 
     service = new MailService({
@@ -221,6 +264,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
 
   pi.on("session_shutdown", async () => {
     clearTimers();
+    currentCtx?.ui.setStatus("pi-mail", undefined);
     if (webUi) await webUi.close().catch(() => {});
     webUi = null;
     if (service) await service.close().catch(() => {});
@@ -228,6 +272,41 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     currentCtx = null;
     queuedMessageIds.clear();
     lastMailboxNoticeBucket = 0;
+    staleReminderSent = false;
+  });
+
+  pi.registerCommand("mail-reminder", {
+    description: "Configure stale-mail reminders for this mailbox: /mail-reminder off|<minutes>",
+    handler: async (args, ctx) => {
+      if (!service) {
+        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
+        return;
+      }
+
+      const value = args.trim().toLowerCase();
+      if (!value) {
+        const minutes = await service.reminderAfterMinutes();
+        ctx.ui.notify(
+          minutes == null ? "Pi Mail stale-mail reminder is off." : `Pi Mail stale-mail reminder: ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+          "info",
+        );
+        return;
+      }
+
+      const minutes = value === "off" || value === "0" ? null : Number(value);
+      if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) {
+        ctx.ui.notify("Usage: /mail-reminder off|<1-1440 minutes>", "error");
+        return;
+      }
+
+      await service.configureReminder(minutes);
+      staleReminderSent = false;
+      ctx.ui.notify(
+        minutes == null ? "Pi Mail stale-mail reminder disabled." : `Pi Mail stale-mail reminder set to ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+        "info",
+      );
+      void processIncoming();
+    },
   });
 
   pi.registerCommand("mail-ui", {

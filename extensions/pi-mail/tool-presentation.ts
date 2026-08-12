@@ -99,9 +99,10 @@ export function formatToolContent(action: MailAction, value: unknown): string {
     case "status": {
       const status = value as MailStatus;
       const name = status.sessionName && status.sessionName !== status.alias ? ` · ${status.sessionName}` : "";
+      const reminder = status.reminderAfterMinutes == null ? "off" : `${status.reminderAfterMinutes}m`;
       return [
         `Mailbox ${status.alias} (${status.shortId})${name}; discoverable=${status.discoverable ? "yes" : "no"}.`,
-        `Active peers: ${status.activePeerCount}. Pending: ${status.unpresented.to} To, ${status.unpresented.cc} Cc.`,
+        `Active peers: ${status.activePeerCount}. Pending: ${status.unpresented.to} To, ${status.unpresented.cc} Cc. Reminder: ${reminder}.`,
         `Store: ${status.mailRoot}`,
       ].join("\n");
     }
