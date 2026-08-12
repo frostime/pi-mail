@@ -6,11 +6,11 @@ This document is the maintenance contract for the `extensions/pi-mail` module. I
 
 Pi Mail is communication infrastructure. The module may model identities, addressing, discovery, presence, durable messages, recipient delivery state, threads, and presentation into Pi. It must not acquire orchestration semantics such as tasks, roles, parent/child relationships, scheduling, spawning, work ownership, wait graphs, consensus, or workflow state.
 
-The LLM-facing surface remains one compound `mail` tool. New capabilities should normally become actions of that tool rather than separate tools unless Pi itself imposes a technical constraint.
+The LLM-facing surface remains one compound `mail` tool. New capabilities should normally become actions of that tool rather than separate tools unless Pi itself imposes a technical constraint. Tool `content` is model-facing and should carry the information needed to act without mirroring the full storage JSON shape; structured values may remain in `details` for rendering and session state.
 
 ## Identity and discovery
 
-A Pi session UUID is the immutable mailbox identity for that session. Aliases are mutable display addresses and are not durable identity keys. Address resolution may accept an exact session ID, an unambiguous ID prefix, or an alias; ambiguity must fail rather than silently select a peer.
+A Pi session UUID is the immutable mailbox identity for that session. Aliases are mutable display addresses and are not durable identity keys. Address resolution may accept an exact session ID, an unambiguous ID prefix, or an alias; ambiguity must fail rather than silently select a peer. Message references used by `reply_to`, `inbox`, and `thread` likewise accept either the exact message ID or an unambiguous prefix of at least six characters.
 
 Session identity survives runtime shutdown. Presence does not. Normal discovery returns only active, discoverable sessions and excludes the caller. Historical identities remain available through `include_inactive` so previously known mailboxes and message attribution remain meaningful after a session closes.
 
@@ -46,7 +46,7 @@ Mail sent from the Web UI uses the `human` sender kind. On a recipient Pi runtim
 
 ## Web UI contract
 
-`/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, session shutdown, or the page's close action stops that server. The mail system itself must continue to work when the Web UI is not running.
+`/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, session shutdown, or the page's close action stops that server. The mail system itself must continue to work when the Web UI is not running. The human supervisor view may list the current session and sessions hidden from peer discovery, because `discoverable` controls peer discovery rather than local-user visibility. Selecting “all active” is only a UI convenience that expands to an explicit `To` recipient list; it must not introduce broadcast or group-address semantics into mail-core.
 
 The server binds only to `127.0.0.1` on an ephemeral port. Every `/api/*` request requires a random bearer token supplied in the launch URL and retained by the page. This token requirement must not be removed merely because the server is loopback-only: browser-originated cross-site requests are part of the threat model.
 

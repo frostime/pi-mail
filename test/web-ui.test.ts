@@ -31,23 +31,27 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.match(html, /Compose as user/);
     assert.match(html, /以用户身份写信/);
     assert.match(html, /prefers-color-scheme/);
+    assert.match(html, /To: all active/);
 
     const { base, headers } = authorization(ui.url);
     assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
-    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: unknown[] };
-    assert.equal(state.peers.length, 1);
+    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; self?: boolean }> };
+    assert.equal(state.peers.length, 2);
+    assert.equal(state.peers.filter((peer) => peer.self).length, 1);
 
     const sendResponse = await fetch(`${base}/api/send`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ to: ["bob"], cc: [], subject: "From Web UI", body: "Human message" }),
+      body: JSON.stringify({ to: [a.sessionId, b.sessionId], cc: [], subject: "From Web UI", body: "Human message" }),
     });
     assert.equal(sendResponse.status, 201);
 
-    const inbox = await b.listInbox({ markPresented: false }) as MailMessage[];
-    assert.equal(inbox[0].senderKind, "human");
-    assert.equal(inbox[0].subject, "From Web UI");
+    const aInbox = await a.listInbox({ markPresented: false }) as MailMessage[];
+    const bInbox = await b.listInbox({ markPresented: false }) as MailMessage[];
+    assert.equal(aInbox[0].senderKind, "human");
+    assert.equal(bInbox[0].senderKind, "human");
+    assert.equal(bInbox[0].subject, "From Web UI");
 
     const closeResponse = await fetch(`${base}/api/close`, {
       method: "POST",

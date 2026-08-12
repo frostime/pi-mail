@@ -1,6 +1,6 @@
 {
   "name": "pi-mail",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A lightweight local mailbox and peer-discovery layer for independent Pi sessions.",
   "author": "frostime",
   "license": "GPL-3.0-only",
@@ -32,7 +32,8 @@
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "engines": {
     "node": ">=22"

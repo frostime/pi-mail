@@ -57,7 +57,7 @@ The LLM sees one tool with an `action` field rather than several independent too
 }
 ```
 
-Replies preserve the existing thread:
+Message references accept either a full message ID or an unambiguous prefix of at least six characters, so the eight-character IDs shown by Pi Mail can be used directly. Replies preserve the existing thread:
 
 ```json
 {
@@ -106,7 +106,7 @@ Durable mail storage and Pi attention are separate concerns. Direct peer-session
 
 Peer mail is explicitly marked as coming from another session and must not be treated as human authorization. Mail composed by the user in the Web UI uses the `human` sender kind and is delivered with Pi's user-message API, preserving the authority boundary.
 
-`sent` reports `deliveredAt` and `presentedAt`. `presentedAt` is not a read receipt; it only means the recipient integration crossed its presentation boundary.
+`sent` reports delivery/presentation state, but the `mail` tool no longer sends the storage JSON verbatim into model context. Its model-facing result is a compact mail-oriented text view, while structured data stays in Pi tool `details`. Pi also gets a custom collapsed renderer, so users normally see a short operation summary and can expand the tool row for the readable result. `presentedAt` is not a read receipt; it only means the recipient integration crossed its presentation boundary.
 
 ## Web UI
 
@@ -116,7 +116,7 @@ Run:
 /mail-ui
 ```
 
-Pi Mail starts a temporary server on `127.0.0.1` using an ephemeral port, attempts to open it in the default browser, and always prints the URL in Pi. The UI shows the current mailbox status, active and historical sessions, and the latest project messages. The user can select several `To`/`Cc` recipients and send mail as the human principal.
+Pi Mail starts a temporary server on `127.0.0.1` using an ephemeral port, attempts to open it in the default browser, and always prints the URL in Pi. The UI shows the current mailbox status, active and historical sessions, and the latest project messages. The current session is included in the recipient picker, so the user can send to one session, several sessions, or use **To: all active** to select every currently active session. That button expands to ordinary explicit recipients; Pi Mail still has no broadcast/group primitive. Long message and recipient lists scroll inside their panels instead of growing the page indefinitely.
 
 The interface follows the browser's light/dark preference by default, also offers explicit light and dark modes, and can switch between English and Chinese. Its API requires a random bearer token embedded in the launch URL; the token is removed from the address bar after the page stores it for the tab.
 

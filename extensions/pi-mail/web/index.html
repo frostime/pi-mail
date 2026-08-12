@@ -83,6 +83,7 @@
     .metric { padding: 12px; border-radius: 10px; background: var(--panel-2); }
     .metric strong { display: block; font-size: 18px; margin-top: 2px; }
     .peer-list, .message-list { display: grid; gap: 9px; }
+    .message-list { max-height: min(68vh, 760px); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
     .peer, .message { border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; }
     .peer-line, .message-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .peer-name, .message-subject { font-weight: 650; }
@@ -97,7 +98,9 @@
     }
     input[type="text"]:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
     textarea { min-height: 128px; resize: vertical; }
-    .recipient-grid { display: grid; gap: 7px; }
+    .recipient-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .recipient-actions .button { padding: 5px 8px; font-size: 12px; }
+    .recipient-grid { display: grid; gap: 7px; max-height: 300px; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
     .recipient {
       display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center;
       padding: 8px 9px; border-radius: 8px; background: var(--panel-2);
@@ -158,6 +161,10 @@
             <form id="compose-form" class="compose-grid">
               <div>
                 <div class="peer-line"><strong data-i18n="recipients">Recipients</strong><span class="muted" data-i18n="recipientHint">choose To / Cc</span></div>
+                <div class="recipient-actions">
+                  <button id="select-active" class="button" type="button" data-i18n="selectActive">To: all active</button>
+                  <button id="clear-recipients" class="button" type="button" data-i18n="clearRecipients">Clear</button>
+                </div>
                 <div id="recipient-grid" class="recipient-grid"></div>
               </div>
               <label class="field"><span data-i18n="subject">Subject</span><input id="subject" type="text" maxlength="200"></label>
@@ -190,7 +197,7 @@
           active: "active", inactive: "historical", noPeers: "No sessions found.", noMessages: "No messages yet.", to: "To", cc: "Cc",
           sendSuccess: "Message delivered.", chooseRecipient: "Choose at least one To recipient.", sendFailed: "Send failed", loadFailed: "Failed to load mail state",
           delivered: "delivered", presented: "presented", pending: "not presented", user: "user", closeConfirm: "Close the Pi Mail Web UI server?",
-          closed: "The Web UI server has been closed. You can close this tab."
+          closed: "The Web UI server has been closed. You can close this tab.", current: "current", selectActive: "To: all active", clearRecipients: "Clear"
         },
         zh: {
           subtitle: "当前项目的本地邮箱监督视图。", themeAuto: "主题：自动", themeLight: "主题：亮色", themeDark: "主题：暗色",
@@ -200,7 +207,7 @@
           active: "活跃", inactive: "历史", noPeers: "当前没有可显示的 session。", noMessages: "还没有邮件。", to: "To", cc: "Cc",
           sendSuccess: "邮件已投递。", chooseRecipient: "至少选择一个 To 收件人。", sendFailed: "发送失败", loadFailed: "加载邮箱状态失败",
           delivered: "已投递", presented: "已呈现", pending: "未呈现", user: "用户", closeConfirm: "确定关闭 Pi Mail Web UI 服务？",
-          closed: "Web UI 服务已关闭，可以关闭此页面。"
+          closed: "Web UI 服务已关闭，可以关闭此页面。", current: "当前", selectActive: "To：全部活跃", clearRecipients: "清空"
         }
       };
 
@@ -272,7 +279,7 @@
           const top = element("div", "peer-line");
           const name = element("div", "peer-name");
           const dot = element("span", `dot ${peer.active ? "active" : ""}`);
-          name.append(dot, document.createTextNode(`${peer.alias} · ${peer.shortId}`));
+          name.append(dot, document.createTextNode(`${peer.alias} · ${peer.shortId}${peer.self ? ` · ${t("current")}` : ""}`));
           top.append(name, element("span", "muted", t(peer.active ? "active" : "inactive")));
           card.append(top, element("div", "address", peer.cwd || ""));
           return card;
@@ -286,7 +293,7 @@
         $("recipient-grid").replaceChildren(...peers.map((peer) => {
           const row = element("div", "recipient");
           const name = element("div", "");
-          name.append(element("span", `dot ${peer.active ? "active" : ""}`), document.createTextNode(`${peer.alias} · ${peer.shortId}`));
+          name.append(element("span", `dot ${peer.active ? "active" : ""}`), document.createTextNode(`${peer.alias} · ${peer.shortId}${peer.self ? ` · ${t("current")}` : ""}`));
           const toLabel = element("label", "");
           const toInput = document.createElement("input");
           toInput.type = "checkbox"; toInput.dataset.kind = "to"; toInput.dataset.peer = peer.id; toInput.checked = selectedTo.has(peer.id);
@@ -360,6 +367,17 @@
           $("compose-notice").className = "notice error";
           $("compose-notice").textContent = `${t("sendFailed")}: ${escapeText(error.message)}`;
         }
+      });
+
+
+      $("select-active").addEventListener("click", () => {
+        if (!state) return;
+        const activeIds = new Set(state.peers.filter((peer) => peer.active).map((peer) => peer.id));
+        document.querySelectorAll('input[data-kind="to"]').forEach((node) => { node.checked = activeIds.has(node.dataset.peer); });
+        document.querySelectorAll('input[data-kind="cc"]').forEach((node) => { if (activeIds.has(node.dataset.peer)) node.checked = false; });
+      });
+      $("clear-recipients").addEventListener("click", () => {
+        document.querySelectorAll('#recipient-grid input[type="checkbox"]').forEach((node) => { node.checked = false; });
       });
 
       $("language").addEventListener("click", () => {

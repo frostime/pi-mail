@@ -6,6 +6,7 @@ import type {
   DeliveryRecord,
   DiscoveredPeer,
   MailMessage,
+  MailStatus,
   MessageRecord,
   PeerAddress,
   PeerRecord,
@@ -153,6 +154,26 @@ export class MailService {
   }
 
   async discover(options: { includeInactive?: boolean } = {}): Promise<DiscoveredPeer[]> {
+    return this.listSessions({
+      includeInactive: options.includeInactive ?? false,
+      includeSelf: false,
+      includeUndiscoverable: false,
+    });
+  }
+
+  async listProjectSessions(options: { includeInactive?: boolean } = {}): Promise<DiscoveredPeer[]> {
+    return this.listSessions({
+      includeInactive: options.includeInactive ?? true,
+      includeSelf: true,
+      includeUndiscoverable: true,
+    });
+  }
+
+  private async listSessions(options: {
+    includeInactive: boolean;
+    includeSelf: boolean;
+    includeUndiscoverable: boolean;
+  }): Promise<DiscoveredPeer[]> {
     const peers = await this.store.listPeers();
     const activePresence = await this.activePresence();
     const presenceBySession = new Map<string, typeof activePresence>();
@@ -164,8 +185,8 @@ export class MailService {
     }
 
     return peers
-      .filter((peer) => peer.id !== this.sessionId)
-      .filter((peer) => peer.discoverable !== false)
+      .filter((peer) => options.includeSelf || peer.id !== this.sessionId)
+      .filter((peer) => options.includeUndiscoverable || peer.discoverable !== false)
       .filter((peer) => options.includeInactive || presenceBySession.has(peer.id))
       .map((peer) => {
         const presences = presenceBySession.get(peer.id) ?? [];
@@ -181,10 +202,12 @@ export class MailService {
           runtimeCount: presences.length,
           cwd: latest?.cwd ?? peer.cwd,
           lastSeenAt: latest?.lastSeenAt ?? null,
+          self: peer.id === this.sessionId,
         };
       })
       .sort((a, b) => {
         if (a.active !== b.active) return a.active ? -1 : 1;
+        if (a.self !== b.self) return a.self ? -1 : 1;
         return a.alias.localeCompare(b.alias);
       });
   }
@@ -222,15 +245,16 @@ export class MailService {
     } = options;
 
     if (messageId) {
-      const delivery = await this.store.getDelivery(this.sessionId, messageId);
+      const resolvedMessageId = await this.resolveMessageId(messageId);
+      const delivery = await this.store.getDelivery(this.sessionId, resolvedMessageId);
       if (!delivery) throw new Error(`Message "${messageId}" is not in your inbox`);
 
-      const message = await this.store.getMessage(messageId);
-      if (!message) throw new Error(`Message "${messageId}" is missing from storage`);
+      const message = await this.store.getMessage(resolvedMessageId);
+      if (!message) throw new Error(`Message "${resolvedMessageId}" is missing from storage`);
 
       let nextDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
-        nextDelivery = await this.store.updateDelivery(this.sessionId, messageId, {
+        nextDelivery = await this.store.updateDelivery(this.sessionId, resolvedMessageId, {
           presentedAt: nowIso(),
         }) ?? delivery;
       }
@@ -287,8 +311,10 @@ export class MailService {
   async thread(reference: string | undefined): Promise<MailMessage[]> {
     if (!reference) throw new Error("thread requires a message_id");
 
-    const referencedMessage = await this.store.getMessage(reference);
-    const threadId = referencedMessage?.threadId ?? reference;
+    const messageId = await this.resolveMessageId(reference);
+    const referencedMessage = await this.store.getMessage(messageId);
+    if (!referencedMessage) throw new Error(`Unknown message "${reference}"`);
+    const threadId = referencedMessage.threadId;
     const messages = (await this.store.listMessages())
       .filter((message) => message.threadId === threadId)
       .sort(sortByCreatedAsc);
@@ -313,7 +339,7 @@ export class MailService {
     return output;
   }
 
-  async status(): Promise<Record<string, unknown>> {
+  async status(): Promise<MailStatus> {
     const peer = await this.store.getPeer(this.sessionId);
     const inbox = await this.listInbox({
       unpresentedOnly: true,
@@ -351,7 +377,8 @@ export class MailService {
     let subject = input.subject;
 
     if (input.replyTo) {
-      const parent = await this.store.getMessage(input.replyTo);
+      const parentId = await this.resolveMessageId(input.replyTo);
+      const parent = await this.store.getMessage(parentId);
       if (!parent) throw new Error(`Unknown reply_to message "${input.replyTo}"`);
 
       inReplyTo = parent.id;
@@ -414,6 +441,31 @@ export class MailService {
         presentedAt: null,
       });
     }
+  }
+
+  private async resolveMessageId(reference: string): Promise<string> {
+    const query = String(reference ?? "").trim();
+    if (!query) throw new Error("Message reference cannot be empty");
+
+    if (await this.store.getMessage(query)) return query;
+
+    if (query.length < 6) {
+      throw new Error(`Unknown message "${query}". Message ID prefixes must be at least 6 characters.`);
+    }
+
+    const matches = (await this.store.listMessages())
+      .filter((message) => message.id.startsWith(query));
+
+    if (matches.length === 1) return matches[0].id;
+    if (matches.length > 1) {
+      const candidates = matches
+        .slice(0, 5)
+        .map((message) => message.id)
+        .join(", ");
+      throw new Error(`Ambiguous message id prefix "${query}". Candidates: ${candidates}`);
+    }
+
+    throw new Error(`Unknown message "${query}". Use mail action=inbox, sent, or thread with a known message ID.`);
   }
 
   private async resolveOne(address: string): Promise<string> {

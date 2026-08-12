@@ -62,6 +62,17 @@ test("discovery is active-only by default but preserves historical peers", async
   );
 });
 
+test("human supervisor session listing includes self and peer-hidden sessions", async () => {
+  const { a, b } = await makeServices();
+  await b.configure({ discoverable: false });
+
+  assert.deepEqual((await a.discover()).map((peer) => peer.alias), ["carol"]);
+
+  const sessions = await a.listProjectSessions({ includeInactive: true });
+  assert.equal(sessions.find((peer) => peer.id === a.sessionId)?.self, true);
+  assert.ok(sessions.some((peer) => peer.id === b.sessionId));
+});
+
 test("one message can address multiple To and Cc recipients", async () => {
   const { a, b, c } = await makeServices();
 
@@ -78,6 +89,23 @@ test("one message can address multiple To and Cc recipients", async () => {
   assert.equal(bInbox[0].delivery?.kind, "to");
   assert.equal(cInbox[0].id, sent.id);
   assert.equal(cInbox[0].delivery?.kind, "cc");
+});
+
+test("message references accept unambiguous ID prefixes", async () => {
+  const { a, b } = await makeServices();
+
+  const first = await a.send({
+    to: ["bob"],
+    subject: "Prefix lookup",
+    body: "Use the displayed short ID to reply.",
+  });
+
+  const read = await b.listInbox({ messageId: first.shortId, markPresented: false }) as MailMessage;
+  assert.equal(read.id, first.id);
+
+  const reply = await b.send({ replyTo: first.shortId, body: "Short ID resolved." });
+  assert.equal(reply.inReplyTo, first.id);
+  assert.equal((await a.thread(reply.shortId)).length, 2);
 });
 
 test("reply-all preserves the thread and original participants", async () => {

@@ -67,11 +67,24 @@ export interface MailMessage {
   delivery?: Pick<DeliveryRecord, "kind" | "deliveredAt" | "presentedAt">;
 }
 
+
+export interface MailStatus {
+  id: string;
+  shortId: string;
+  alias: string;
+  discoverable: boolean;
+  mailRoot: string;
+  unpresented: { to: number; cc: number };
+  activePeerCount: number;
+}
+
 export interface DiscoveredPeer extends PeerAddress {
   active: boolean;
   runtimeCount: number;
   cwd: string;
   lastSeenAt: string | null;
+  /** True only when an internal caller explicitly includes the current session. */
+  self?: boolean;
 }
 
 export interface SentRecipient extends PeerAddress {

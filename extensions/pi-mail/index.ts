@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { HUMAN_PRINCIPAL_ID, MailService } from "./mail-service.ts";
-import type { MailMessage } from "./types.ts";
+import type {
+  DiscoveredPeer,
+  MailMessage,
+  MailStatus,
+  PeerRecord,
+  SentMessageSummary,
+  SentRecipient,
+} from "./types.ts";
 import { openWebUiInBrowser, startWebUi } from "./web-ui.ts";
 
 const ACTION = Type.Union([
@@ -16,11 +24,171 @@ const ACTION = Type.Union([
   Type.Literal("configure"),
 ]);
 
-function jsonResult(value: unknown) {
+type MailAction = "status" | "discover" | "send" | "inbox" | "sent" | "thread" | "configure";
+
+type MailToolArgs = {
+  action: MailAction;
+  to?: string[];
+  cc?: string[];
+  subject?: string;
+  body?: string;
+  reply_to?: string;
+  reply_all?: boolean;
+  message_id?: string;
+  include_inactive?: boolean;
+  unpresented_only?: boolean;
+  limit?: number;
+  alias?: string;
+  discoverable?: boolean;
+};
+
+function peerLabel(peer: { alias: string; shortId: string }): string {
+  return `${peer.alias} (${peer.shortId})`;
+}
+
+function formatRecipientState(recipient: SentRecipient): string {
+  const state = recipient.presentedAt ? "presented" : recipient.deliveredAt ? "delivered" : "pending";
+  return `${recipient.kind.toUpperCase()} ${peerLabel(recipient)}: ${state}`;
+}
+
+function formatMail(mail: MailMessage): string {
+  const to = mail.to.map(peerLabel).join(", ") || "(none)";
+  const cc = mail.cc.length ? `\nCc: ${mail.cc.map(peerLabel).join(", ")}` : "";
+  const delivery = mail.delivery ? `\nRecipient kind: ${mail.delivery.kind.toUpperCase()}` : "";
+
+  return [
+    `[${mail.shortId}] ${mail.subject}`,
+    `From: ${peerLabel(mail.from)}`,
+    `To: ${to}${cc}${delivery}`,
+    `Message-ID: ${mail.id}`,
+    `Thread: ${mail.threadId}`,
+    "",
+    mail.body,
+  ].join("\n");
+}
+
+function formatToolContent(action: MailAction, value: unknown): string {
+  switch (action) {
+    case "status": {
+      const status = value as MailStatus;
+      return [
+        `Mailbox ${status.alias} (${status.shortId}); discoverable=${status.discoverable ? "yes" : "no"}.`,
+        `Active peers: ${status.activePeerCount}. Unpresented: ${status.unpresented.to} To, ${status.unpresented.cc} Cc.`,
+        `Store: ${status.mailRoot}`,
+      ].join("\n");
+    }
+
+    case "discover": {
+      const peers = value as DiscoveredPeer[];
+      if (!peers.length) return "No discoverable sessions found.";
+      return [
+        `${peers.length} discoverable session${peers.length === 1 ? "" : "s"}:`,
+        ...peers.map((peer) => `- ${peerLabel(peer)} · ${peer.active ? "active" : "historical"}${peer.cwd ? ` · ${peer.cwd}` : ""}`),
+      ].join("\n");
+    }
+
+    case "send": {
+      const mail = value as MailMessage;
+      const to = mail.to.map(peerLabel).join(", ");
+      const cc = mail.cc.length ? `; Cc ${mail.cc.map(peerLabel).join(", ")}` : "";
+      return `Sent [${mail.shortId}] "${mail.subject}" to ${to}${cc}. Thread ${mail.threadId}.`;
+    }
+
+    case "inbox": {
+      const messages = Array.isArray(value) ? value as MailMessage[] : [value as MailMessage];
+      if (!messages.length) return "Inbox is empty.";
+      return messages.map(formatMail).join("\n\n---\n\n");
+    }
+
+    case "sent": {
+      const messages = value as SentMessageSummary[];
+      if (!messages.length) return "No sent messages.";
+      return [
+        `${messages.length} sent message${messages.length === 1 ? "" : "s"}:`,
+        ...messages.map((message) => {
+          const recipients = message.recipients.map(formatRecipientState).join("; ");
+          return `- [${message.shortId}] ${message.subject} · ${recipients || "no recipients"}`;
+        }),
+      ].join("\n");
+    }
+
+    case "thread": {
+      const messages = value as MailMessage[];
+      if (!messages.length) return "Thread is empty.";
+      return [`Thread ${messages[0].threadId} · ${messages.length} message${messages.length === 1 ? "" : "s"}`, "", messages.map(formatMail).join("\n\n---\n\n")].join("\n");
+    }
+
+    case "configure": {
+      const peer = value as PeerRecord;
+      return `Mailbox identity updated: ${peer.alias} (${peer.id.slice(0, 8)}); discoverable=${peer.discoverable ? "yes" : "no"}.`;
+    }
+  }
+}
+
+function toolResult(action: MailAction, value: unknown) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
+    // Pi sends content to the model. Keep it semantically complete but avoid
+    // duplicating the storage-oriented JSON shape into model context.
+    content: [{ type: "text" as const, text: formatToolContent(action, value) }],
+    // Structured data remains available to Pi's renderer/session state.
     details: value,
   };
+}
+
+function toolCallLabel(args: MailToolArgs): string {
+  switch (args.action) {
+    case "send": {
+      const recipients = args.to?.length ? ` → ${args.to.join(", ")}` : args.reply_to ? ` ↩ ${args.reply_to}` : "";
+      const subject = args.subject ? ` · ${args.subject}` : "";
+      return `send${recipients}${subject}`;
+    }
+    case "inbox":
+      return args.message_id ? `inbox ${args.message_id}` : `inbox${args.unpresented_only ? " · unpresented" : ""}`;
+    case "thread":
+      return `thread ${args.message_id ?? ""}`.trim();
+    case "discover":
+      return `discover${args.include_inactive ? " · incl. history" : ""}`;
+    case "configure": {
+      const changes = [args.alias ? `alias=${args.alias}` : "", args.discoverable === undefined ? "" : `discoverable=${args.discoverable}`].filter(Boolean);
+      return `configure${changes.length ? ` · ${changes.join(" · ")}` : ""}`;
+    }
+    default:
+      return args.action;
+  }
+}
+
+function collapsedResultLabel(action: MailAction, value: unknown): string {
+  switch (action) {
+    case "status": {
+      const status = value as MailStatus;
+      return `${status.alias} (${status.shortId}) · ${status.activePeerCount} active peer${status.activePeerCount === 1 ? "" : "s"}`;
+    }
+    case "discover": {
+      const peers = value as DiscoveredPeer[];
+      return `${peers.length} discoverable session${peers.length === 1 ? "" : "s"}`;
+    }
+    case "send": {
+      const mail = value as MailMessage;
+      return `sent ${mail.shortId} → ${mail.to.map((peer) => peer.alias).join(", ")}`;
+    }
+    case "inbox": {
+      const messages = Array.isArray(value) ? value as MailMessage[] : [value as MailMessage];
+      if (messages.length === 1) return `${messages[0].shortId} · ${messages[0].from.alias} · ${messages[0].subject}`;
+      return `${messages.length} inbox message${messages.length === 1 ? "" : "s"}`;
+    }
+    case "sent": {
+      const messages = value as SentMessageSummary[];
+      return `${messages.length} sent message${messages.length === 1 ? "" : "s"}`;
+    }
+    case "thread": {
+      const messages = value as MailMessage[];
+      return `${messages.length} message${messages.length === 1 ? "" : "s"} in thread ${messages[0]?.threadId.slice(0, 8) ?? ""}`.trim();
+    }
+    case "configure": {
+      const peer = value as PeerRecord;
+      return `${peer.alias} (${peer.id.slice(0, 8)})`;
+    }
+  }
 }
 
 function peerMailContent(mail: MailMessage): string {
@@ -233,12 +401,12 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     parameters: Type.Object({
       action: ACTION,
       to: Type.Optional(Type.Array(Type.String({ description: "Recipient alias, full session ID, or unambiguous ID prefix." }))),
-      cc: Type.Optional(Type.Array(Type.String({ description: "Informational recipient alias or session ID." }))),
+      cc: Type.Optional(Type.Array(Type.String({ description: "Informational recipient alias, full session ID, or unambiguous ID prefix." }))),
       subject: Type.Optional(Type.String()),
       body: Type.Optional(Type.String()),
-      reply_to: Type.Optional(Type.String({ description: "Message ID to reply to. Without explicit to, replies to the sender." })),
+      reply_to: Type.Optional(Type.String({ description: "Full message ID or unambiguous ID prefix (at least 6 characters). Without explicit to, replies to the sender." })),
       reply_all: Type.Optional(Type.Boolean({ description: "With reply_to and no explicit to, retain the original To/Cc participants." })),
-      message_id: Type.Optional(Type.String({ description: "Message ID for inbox read or thread lookup." })),
+      message_id: Type.Optional(Type.String({ description: "Full message ID or unambiguous ID prefix (at least 6 characters) for inbox read or thread lookup." })),
       include_inactive: Type.Optional(Type.Boolean({ description: "For discover, include historical sessions that are not currently active." })),
       unpresented_only: Type.Optional(Type.Boolean({ description: "For inbox, only return mail not yet presented to this Pi session." })),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
@@ -251,11 +419,11 @@ export default function piMailExtension(pi: ExtensionAPI): void {
 
       switch (params.action) {
         case "status":
-          return jsonResult(await service.status());
+          return toolResult("status", await service.status());
         case "discover":
-          return jsonResult(await service.discover({ includeInactive: params.include_inactive ?? false }));
+          return toolResult("discover", await service.discover({ includeInactive: params.include_inactive ?? false }));
         case "send":
-          return jsonResult(await service.send({
+          return toolResult("send", await service.send({
             to: params.to,
             cc: params.cc ?? [],
             subject: params.subject,
@@ -264,22 +432,48 @@ export default function piMailExtension(pi: ExtensionAPI): void {
             replyAll: params.reply_all ?? false,
           }));
         case "inbox":
-          return jsonResult(await service.listInbox({
+          return toolResult("inbox", await service.listInbox({
             messageId: params.message_id,
             unpresentedOnly: params.unpresented_only ?? false,
             limit: params.limit,
             markPresented: true,
           }));
         case "sent":
-          return jsonResult(await service.listSent({ limit: params.limit }));
+          return toolResult("sent", await service.listSent({ limit: params.limit }));
         case "thread":
-          return jsonResult(await service.thread(params.message_id));
+          return toolResult("thread", await service.thread(params.message_id));
         case "configure":
-          return jsonResult(await service.configure({
+          return toolResult("configure", await service.configure({
             alias: params.alias,
             discoverable: params.discoverable,
           }));
       }
+    },
+
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      text.setText(`${theme.fg("toolTitle", theme.bold("mail"))} ${theme.fg("muted", toolCallLabel(args as MailToolArgs))}`);
+      return text;
+    },
+
+    renderResult(result, { expanded, isPartial }, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (isPartial) {
+        text.setText(theme.fg("muted", "…"));
+        return text;
+      }
+
+      const action = (context.args as MailToolArgs).action;
+      if (context.isError) {
+        const errorText = result.content.find((item) => item.type === "text")?.text ?? "Pi Mail failed";
+        text.setText(theme.fg("error", errorText));
+        return text;
+      }
+
+      const fullText = result.content.find((item) => item.type === "text")?.text ?? "";
+      const displayText = expanded ? fullText : collapsedResultLabel(action, result.details);
+      text.setText(`${theme.fg("success", "✓")} ${displayText}`);
+      return text;
     },
   });
 }

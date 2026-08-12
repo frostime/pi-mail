@@ -141,7 +141,7 @@ export async function startWebUi(service: MailService): Promise<WebUiHandle> {
       if (url.pathname === "/api/state" && request.method === "GET") {
         json(response, 200, {
           status: await service.status(),
-          peers: await service.discover({ includeInactive: true }),
+          peers: await service.listProjectSessions({ includeInactive: true }),
           messages: await service.listProjectMessages({ limit: 100 }),
         });
         return;
