@@ -26,6 +26,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const MAX_WAIT_TIMEOUT_MS = 300_000;
 const WAIT_POLL_INTERVAL_MS = 250;
 const WAIT_RESULT_LIMIT = 20;
+const GENERATED_ALIAS_COUNT = 1_000;
 export const HUMAN_PRINCIPAL_ID = "human-local";
 export const HUMAN_PRINCIPAL_ALIAS = "user";
 
@@ -50,12 +51,34 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function defaultAlias(sessionId: string): string {
-  return `session-${shortSessionId(sessionId)}`;
+function defaultAliasNumber(sessionId: string): number {
+  const compact = sessionId.replaceAll("-", "");
+  return Number.parseInt(compact.slice(-6), 16) % GENERATED_ALIAS_COUNT;
+}
+
+function defaultAlias(sessionId: string, peers: PeerRecord[]): string {
+  const used = new Set(peers.map((peer) => peer.alias.toLowerCase()));
+  const start = defaultAliasNumber(sessionId);
+
+  for (let offset = 0; offset < GENERATED_ALIAS_COUNT; offset += 1) {
+    const number = (start + offset) % GENERATED_ALIAS_COUNT;
+    const alias = `S${String(number).padStart(3, "0")}`;
+    if (!used.has(alias.toLowerCase())) return alias;
+  }
+
+  throw new Error("No available generated mailbox alias");
 }
 
 function legacyDefaultAlias(sessionId: string): string {
   return `session-${sessionId.slice(0, 8)}`;
+}
+
+function tailDefaultAlias(sessionId: string): string {
+  return `session-${shortSessionId(sessionId)}`;
+}
+
+function isLegacyGeneratedAlias(alias: string | undefined, sessionId: string): boolean {
+  return alias === legacyDefaultAlias(sessionId) || alias === tailDefaultAlias(sessionId);
 }
 
 function normalizeSessionName(name: string | null | undefined): string | undefined {
@@ -162,13 +185,14 @@ export class MailService {
       ? existing?.sessionName
       : normalizeSessionName(options.sessionName);
     const requestedAlias = normalizeAlias(options.alias);
-    const existingAlias = existing?.alias === legacyDefaultAlias(this.sessionId)
-      ? undefined
-      : existing?.alias;
+    const existingAlias = existing?.alias && !isLegacyGeneratedAlias(existing.alias, this.sessionId)
+      ? existing.alias
+      : undefined;
+    const peers = existingAlias ? [] : await this.store.listPeers();
     const peer: PeerRecord = {
       version: 1,
       id: this.sessionId,
-      alias: existingAlias ?? requestedAlias ?? defaultAlias(this.sessionId),
+      alias: existingAlias ?? requestedAlias ?? defaultAlias(this.sessionId, peers),
       ...(sessionName ? { sessionName } : {}),
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
@@ -348,7 +372,7 @@ export class MailService {
     return this.sendFrom({
       senderKind: "session",
       senderId: this.sessionId,
-      senderAlias: (await this.store.getPeer(this.sessionId))?.alias ?? defaultAlias(this.sessionId),
+      senderAlias: (await this.store.getPeer(this.sessionId))?.alias ?? defaultAlias(this.sessionId, []),
       ...input,
     });
   }
@@ -555,7 +579,7 @@ export class MailService {
     return {
       id: this.sessionId,
       shortId: shortSessionId(this.sessionId),
-      alias: peer?.alias ?? defaultAlias(this.sessionId),
+      alias: peer?.alias ?? defaultAlias(this.sessionId, []),
       sessionName: peer?.sessionName ?? null,
       discoverable: peer?.discoverable !== false,
       reminderAfterMinutes: normalizeReminderMinutes(peer?.reminderAfterMinutes),

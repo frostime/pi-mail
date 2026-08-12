@@ -84,7 +84,7 @@ test("session short IDs use the random UUID tail and are valid recipient address
   assert.equal((await inbox(second))[0].id, sent.id);
 });
 
-test("legacy timestamp-prefix default aliases migrate to tail-based defaults", async () => {
+test("legacy timestamp-prefix default aliases migrate to generated aliases", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-alias-migration-"));
   const sessionId = "019ff5f7-12e9-71bf-850b-76732fe0a69c";
   const service = new MailService({ cwd, sessionId, runtimeId: "runtime-migrate", presenceTtlMs: 60_000 });
@@ -101,7 +101,16 @@ test("legacy timestamp-prefix default aliases migrate to tail-based defaults", a
   });
 
   const peer = await service.init();
-  assert.equal(peer.alias, "session-76732fe0a69c");
+  assert.equal(peer.alias, "S716");
+});
+
+test("new sessions receive a compact generated alias and avoid collisions", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-generated-alias-"));
+  const first = new MailService({ cwd, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaa000001", runtimeId: "runtime-generated-a" });
+  const second = new MailService({ cwd, sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbb000001", runtimeId: "runtime-generated-b" });
+
+  assert.equal((await first.init()).alias, "S001");
+  assert.equal((await second.init()).alias, "S002");
 });
 
 test("Pi session names are tracked separately from mailbox aliases", async () => {
