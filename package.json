@@ -1,7 +1,7 @@
 {
   "name": "pi-mail",
   "version": "0.6.0",
-  "description": "A lightweight local mailbox and peer-discovery layer for independent Pi sessions.",
+  "description": "Local mailbox communication for independent Pi coding sessions, with peer discovery and a human Web UI.",
   "author": "frostime",
   "license": "GPL-3.0-only",
   "type": "module",
@@ -19,6 +19,7 @@
     "extensions/",
     "skills/",
     "README.md",
+    "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
