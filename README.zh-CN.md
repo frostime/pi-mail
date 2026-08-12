@@ -132,7 +132,13 @@ Pi session UUID 是不可变的邮箱身份。resume 同一个 Pi session 会继
 
 ## 安装
 
-发布后：
+现在可以直接从公开的 GitHub 仓库安装：
+
+```bash
+pi install git:github.com/frostime/pi-mail
+```
+
+npm 包发布后，也可以使用更短的 registry 来源：
 
 ```bash
 pi install npm:pi-mail

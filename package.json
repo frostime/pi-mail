@@ -4,6 +4,17 @@
   "description": "Local mailbox communication for independent Pi coding sessions, with peer discovery and a human Web UI.",
   "author": "frostime",
   "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frostime/pi-mail.git"
+  },
+  "homepage": "https://github.com/frostime/pi-mail#readme",
+  "bugs": {
+    "url": "https://github.com/frostime/pi-mail/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "keywords": [
     "pi-package",
@@ -30,7 +41,8 @@
     ],
     "skills": [
       "./skills/pi-mail"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/frostime/pi-mail/main/assets/web-ui.jpg"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

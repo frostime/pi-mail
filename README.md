@@ -132,7 +132,13 @@ Pi Mail stores each canonical message as an immutable JSON file and keeps recipi
 
 ## Install
 
-After publication:
+Install directly from the public GitHub repository now:
+
+```bash
+pi install git:github.com/frostime/pi-mail
+```
+
+After the npm package is published, the shorter registry source is also available:
 
 ```bash
 pi install npm:pi-mail
