@@ -1,3 +1,4 @@
+import { shortId } from "./identity.ts";
 import type {
   DiscoveredPeer,
   MailMessage,
@@ -33,8 +34,9 @@ export type SendToolDetails = {
   recipients: SentRecipient[];
 };
 
-function peerLabel(peer: { alias: string; shortId: string }): string {
-  return `${peer.alias} (${peer.shortId})`;
+function peerLabel(peer: { alias: string; shortId: string; sessionName?: string }): string {
+  const name = peer.sessionName && peer.sessionName !== peer.alias ? ` [${peer.sessionName}]` : "";
+  return `${peer.alias}${name} (${peer.shortId})`;
 }
 
 export function previewBody(body: string, maxChars = BODY_PREVIEW_CHARS): string {
@@ -75,7 +77,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
     case "status": {
       const status = value as MailStatus;
       return [
-        `Mailbox ${status.alias} (${status.shortId}); discoverable=${status.discoverable ? "yes" : "no"}.`,
+        `Mailbox ${peerLabel(status)}; discoverable=${status.discoverable ? "yes" : "no"}.`,
         `Active peers: ${status.activePeerCount}. Pending: ${status.unpresented.to} To, ${status.unpresented.cc} Cc.`,
         `Store: ${status.mailRoot}`,
       ].join("\n");
@@ -130,7 +132,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
       const messages = value as MailMessage[];
       if (!messages.length) return "Thread is empty.";
       return [
-        `Thread ${messages[0].threadId.slice(0, 8)} · ${messages.length} message${messages.length === 1 ? "" : "s"}`,
+        `Thread ${shortId(messages[0].threadId)} · ${messages.length} message${messages.length === 1 ? "" : "s"}`,
         "",
         messages.map(formatMailPreview).join("\n\n"),
       ].join("\n");
@@ -138,7 +140,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
 
     case "configure": {
       const peer = value as PeerRecord;
-      return `Mailbox identity updated: ${peer.alias} (${peer.id.slice(0, 8)}); discoverable=${peer.discoverable ? "yes" : "no"}.`;
+      return `Mailbox identity updated: ${peerLabel({ alias: peer.alias, shortId: shortId(peer.id), sessionName: peer.sessionName })}; discoverable=${peer.discoverable ? "yes" : "no"}.`;
     }
   }
 }
@@ -170,7 +172,7 @@ export function collapsedResultLabel(action: MailAction, value: unknown): string
   switch (action) {
     case "status": {
       const status = value as MailStatus;
-      return `${status.alias} (${status.shortId}) · ${status.activePeerCount} active peer${status.activePeerCount === 1 ? "" : "s"}`;
+      return `${peerLabel(status)} · ${status.activePeerCount} active peer${status.activePeerCount === 1 ? "" : "s"}`;
     }
     case "discover": {
       const peers = value as DiscoveredPeer[];
@@ -192,11 +194,11 @@ export function collapsedResultLabel(action: MailAction, value: unknown): string
     }
     case "thread": {
       const messages = value as MailMessage[];
-      return `${messages.length} message${messages.length === 1 ? "" : "s"} in thread ${messages[0]?.threadId.slice(0, 8) ?? ""}`.trim();
+      return `${messages.length} message${messages.length === 1 ? "" : "s"} in thread ${messages[0] ? shortId(messages[0].threadId) : ""}`.trim();
     }
     case "configure": {
       const peer = value as PeerRecord;
-      return `${peer.alias} (${peer.id.slice(0, 8)})`;
+      return peerLabel({ alias: peer.alias, shortId: shortId(peer.id), sessionName: peer.sessionName });
     }
   }
 }

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { FsMailStore } from "./fs-store.ts";
+import { idMatchesReference, minimumReferenceChars, shortId } from "./identity.ts";
 import { resolveMailRoot } from "./project-root.ts";
 import type {
   DeliveryRecord,
@@ -43,7 +44,18 @@ function nowIso(): string {
 }
 
 function defaultAlias(sessionId: string): string {
+  return `session-${shortId(sessionId)}`;
+}
+
+function legacyDefaultAlias(sessionId: string): string {
   return `session-${sessionId.slice(0, 8)}`;
+}
+
+function normalizeSessionName(name: string | undefined): string | undefined {
+  if (name == null) return undefined;
+  const value = String(name).trim();
+  if (!value) return undefined;
+  return value.slice(0, 200);
 }
 
 function normalizeAlias(alias: string | undefined): string | undefined {
@@ -99,15 +111,23 @@ export class MailService {
     this.store = new FsMailStore(this.root);
   }
 
-  async init(options: { alias?: string; discoverable?: boolean } = {}): Promise<PeerRecord> {
+  async init(options: { alias?: string; sessionName?: string; discoverable?: boolean } = {}): Promise<PeerRecord> {
     await this.store.init();
 
     const timestamp = nowIso();
     const existing = await this.store.getPeer(this.sessionId);
+    const requestedAlias = normalizeAlias(options.alias);
+    const existingAlias = existing?.alias === legacyDefaultAlias(this.sessionId)
+      ? defaultAlias(this.sessionId)
+      : existing?.alias;
+    const sessionName = Object.prototype.hasOwnProperty.call(options, "sessionName")
+      ? normalizeSessionName(options.sessionName)
+      : existing?.sessionName;
     const peer: PeerRecord = {
       version: 1,
       id: this.sessionId,
-      alias: existing?.alias ?? normalizeAlias(options.alias) ?? defaultAlias(this.sessionId),
+      alias: existingAlias ?? requestedAlias ?? defaultAlias(this.sessionId),
+      sessionName,
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
       createdAt: existing?.createdAt ?? timestamp,
@@ -117,6 +137,23 @@ export class MailService {
     await this.store.putPeer(peer);
     await this.heartbeat();
     return peer;
+  }
+
+
+  async syncSessionName(sessionName: string | undefined): Promise<PeerRecord | null> {
+    const peer = await this.store.getPeer(this.sessionId);
+    if (!peer) return null;
+
+    const nextName = normalizeSessionName(sessionName);
+    if (peer.sessionName === nextName) return peer;
+
+    const next: PeerRecord = {
+      ...peer,
+      sessionName: nextName,
+      updatedAt: nowIso(),
+    };
+    await this.store.putPeer(next);
+    return next;
   }
 
   async heartbeat(): Promise<void> {
@@ -198,8 +235,9 @@ export class MailService {
 
         return {
           id: peer.id,
-          shortId: peer.id.slice(0, 8),
+          shortId: shortId(peer.id),
           alias: peer.alias,
+          sessionName: peer.sessionName,
           active: presences.length > 0,
           runtimeCount: presences.length,
           cwd: latest?.cwd ?? peer.cwd,
@@ -255,7 +293,7 @@ export class MailService {
     await this.store.removeSessionPresence(peerId);
     await this.store.putPeer({ ...peer, deletedAt, updatedAt: deletedAt });
 
-    return { id: peer.id, shortId: peer.id.slice(0, 8), alias: peer.alias };
+    return { id: peer.id, shortId: shortId(peer.id), alias: peer.alias, sessionName: peer.sessionName };
   }
 
   async listInbox(options: {
@@ -326,7 +364,7 @@ export class MailService {
     for (const message of messages) {
       output.push({
         id: message.id,
-        shortId: message.id.slice(0, 8),
+        shortId: shortId(message.id),
         subject: message.subject,
         threadId: message.threadId,
         createdAt: message.createdAt,
@@ -377,8 +415,9 @@ export class MailService {
 
     return {
       id: this.sessionId,
-      shortId: this.sessionId.slice(0, 8),
+      shortId: shortId(this.sessionId),
       alias: peer?.alias ?? defaultAlias(this.sessionId),
+      sessionName: peer?.sessionName,
       discoverable: peer?.discoverable !== false,
       mailRoot: this.root,
       unpresented: {
@@ -478,20 +517,20 @@ export class MailService {
 
     if (await this.store.getMessage(query)) return query;
 
-    if (query.length < 6) {
-      throw new Error(`Unknown message "${query}". Message ID prefixes must be at least 6 characters.`);
+    if (query.replaceAll("-", "").length < minimumReferenceChars()) {
+      throw new Error(`Unknown message "${query}". Short message references must be at least ${minimumReferenceChars()} characters.`);
     }
 
     const matches = (await this.store.listMessages())
-      .filter((message) => message.id.startsWith(query));
+      .filter((message) => idMatchesReference(message.id, query));
 
     if (matches.length === 1) return matches[0].id;
     if (matches.length > 1) {
       const candidates = matches
         .slice(0, 5)
-        .map((message) => message.id)
+        .map((message) => `${shortId(message.id)} (${message.id})`)
         .join(", ");
-      throw new Error(`Ambiguous message id prefix "${query}". Candidates: ${candidates}`);
+      throw new Error(`Ambiguous message id reference "${query}". Candidates: ${candidates}`);
     }
 
     throw new Error(`Unknown message "${query}". Use mail action=inbox, sent, or thread with a known message ID.`);
@@ -509,10 +548,13 @@ export class MailService {
     const exactId = peers.find((peer) => peer.id === query);
     if (exactId) return exactId.id;
 
-    if (query.length >= 6) {
-      const idMatches = peers.filter((peer) => peer.id.startsWith(query));
+    if (query.replaceAll("-", "").length >= minimumReferenceChars()) {
+      const idMatches = peers.filter((peer) => idMatchesReference(peer.id, query));
       if (idMatches.length === 1) return idMatches[0].id;
-      if (idMatches.length > 1) throw new Error(`Ambiguous session id prefix "${query}"`);
+      if (idMatches.length > 1) {
+        const candidates = idMatches.map((peer) => `${peer.alias} (${shortId(peer.id)})`).join(", ");
+        throw new Error(`Ambiguous session id reference "${query}". Candidates: ${candidates}`);
+      }
     }
 
     const aliasMatches = peers.filter(
@@ -526,7 +568,7 @@ export class MailService {
       if (activeMatches.length === 1) return activeMatches[0].id;
 
       const candidates = aliasMatches
-        .map((peer) => `${peer.alias} (${peer.id.slice(0, 8)})`)
+        .map((peer) => `${peer.alias} (${shortId(peer.id)})`)
         .join(", ");
       throw new Error(`Ambiguous alias "${query}". Candidates: ${candidates}`);
     }
@@ -552,14 +594,15 @@ export class MailService {
       const peer = peers.get(id);
       return {
         id,
-        shortId: id.slice(0, 8),
-        alias: peer?.alias ?? fallbackAlias ?? id.slice(0, 8),
+        shortId: shortId(id),
+        alias: peer?.alias ?? fallbackAlias ?? shortId(id),
+        sessionName: peer?.sessionName,
       };
     };
 
     return {
       id: message.id,
-      shortId: message.id.slice(0, 8),
+      shortId: shortId(message.id),
       senderKind: senderKindOf(message),
       from: label(message.from, message.fromAlias),
       to: message.to.map((id) => label(id)),
@@ -590,10 +633,13 @@ export class MailService {
         const delivery = await this.store.getDelivery(recipientId, message.id);
         output.push({
           id: recipientId,
-          shortId: recipientId.slice(0, 8),
+          shortId: recipientId === HUMAN_PRINCIPAL_ID ? "human" : shortId(recipientId),
           alias: recipientId === HUMAN_PRINCIPAL_ID
             ? HUMAN_PRINCIPAL_ALIAS
-            : peers.get(recipientId)?.alias ?? recipientId.slice(0, 8),
+            : peers.get(recipientId)?.alias ?? shortId(recipientId),
+          sessionName: recipientId === HUMAN_PRINCIPAL_ID
+            ? undefined
+            : peers.get(recipientId)?.sessionName,
           kind,
           deliveredAt: delivery?.deliveredAt ?? null,
           presentedAt: delivery?.presentedAt ?? null,

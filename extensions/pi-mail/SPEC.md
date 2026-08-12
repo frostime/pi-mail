@@ -10,7 +10,9 @@ The LLM-facing surface remains one compound `mail` tool. Its registration metada
 
 ## Identity, discovery, and session replacement
 
-A Pi session UUID is the immutable mailbox identity. Aliases are mutable display addresses and are not durable identity keys. Address resolution accepts an exact session ID, an unambiguous ID prefix, or an alias; ambiguity fails rather than silently selecting a peer. Message references used by `reply_to`, `inbox`, and `thread` likewise accept exact IDs or unambiguous prefixes of at least six characters.
+A Pi session UUID is the immutable mailbox identity. Aliases are mutable display addresses and are not durable identity keys. Pi conversation names are stored separately as display metadata and must not silently change mail addressing when `/name` changes. Address resolution accepts an exact session ID, the displayed short ID, a historical unambiguous ID prefix, or an alias; ambiguity fails rather than silently selecting a peer. Message references used by `reply_to`, `inbox`, and `thread` likewise accept exact IDs, displayed short IDs, or historical unambiguous prefixes of at least six characters.
+
+Displayed short IDs must not be based on the fixed leading bytes of Pi session UUIDs: Pi uses time-ordered UUIDs, so sessions created close together can share long prefixes. The current format uses a stable 12-hex suffix and reference resolution keeps accepting legacy prefixes for compatibility.
 
 Session identity survives runtime shutdown, while presence does not. Normal discovery returns only active, discoverable sessions and excludes the caller. Historical identities remain available through `include_inactive` and remain addressable while their mailbox has not been deleted. A send to an inactive historical session is valid: the delivery is persisted, and the sender-facing tool result must disclose that the recipient is inactive rather than implying live delivery.
 
@@ -52,9 +54,9 @@ Mail sent from the Web UI uses the `human` sender kind. On an active recipient P
 
 ## Web UI contract
 
-`/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, session shutdown, or the page's close action stops that server. Mail delivery must continue to work while the Web UI is not running.
+`/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, session shutdown/session replacement, or the page's close action stops that server. If the page closes its own server, a later `/mail-ui` invocation must detect the stale handle and start a new server rather than reopening a dead URL. Mail delivery must continue to work while the Web UI is not running.
 
-The human supervisor view may list the current session and sessions hidden from peer discovery because `discoverable` controls peer discovery, not local-user visibility. The compose view may select one, several, or all currently active sessions; “all active” expands to an explicit `To` list and does not introduce broadcast/group semantics into mail-core. Session and message lists must remain scrollable rather than allowing project history to grow the page without bound.
+The human supervisor view may list the current session and sessions hidden from peer discovery because `discoverable` controls peer discovery, not local-user visibility. Session lists should show the Pi conversation name when present while retaining the independent mail alias and short ID so human operators can distinguish conversation identity from mail addressing. The compose view may select one, several, or all currently active sessions; “all active” expands to an explicit `To` list and does not introduce broadcast/group semantics into mail-core. Session and message lists must remain scrollable rather than allowing project history to grow the page without bound.
 
 The server binds only to `127.0.0.1` on an ephemeral port. Every `/api/*` request requires the random bearer token supplied in the launch URL. This token requirement must not be removed merely because the server is loopback-only: browser-originated cross-site requests are part of the threat model.
 

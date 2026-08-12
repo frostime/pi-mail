@@ -64,6 +64,67 @@ test("discovery is active-only by default but preserves historical peers", async
   );
 });
 
+test("UUIDv7 sessions created close together get distinct suffix-based short IDs", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-v7-"));
+  const first = new MailService({
+    cwd,
+    sessionId: "019ff5f7-12e9-71bf-850b-76732fe0a69c",
+    runtimeId: "runtime-v7-a",
+    presenceTtlMs: 60_000,
+  });
+  const second = new MailService({
+    cwd,
+    sessionId: "019ff5f7-323e-7f29-bbcd-bb4b63d4b781",
+    runtimeId: "runtime-v7-b",
+    presenceTtlMs: 60_000,
+  });
+
+  await first.init();
+  await second.init();
+  const peers = await first.listProjectSessions({ includeInactive: true });
+  const a = peers.find((peer) => peer.id === first.sessionId)!;
+  const b = peers.find((peer) => peer.id === second.sessionId)!;
+
+  assert.equal(first.sessionId.slice(0, 8), second.sessionId.slice(0, 8));
+  assert.notEqual(a.shortId, b.shortId);
+  assert.equal(a.shortId, "76732fe0a69c");
+  assert.equal(b.shortId, "bb4b63d4b781");
+
+  const sent = await first.send({ to: [b.shortId], body: "Short session address works." });
+  assert.equal(sent.to[0].id, second.sessionId);
+});
+
+test("legacy generated prefix aliases migrate when a session registers again", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-alias-migrate-"));
+  const sessionId = "019ff5f7-12e9-71bf-850b-76732fe0a69c";
+  const service = new MailService({ cwd, sessionId, runtimeId: "runtime-migrate", presenceTtlMs: 60_000 });
+  await service.store.init();
+  await service.store.putPeer({
+    version: 1,
+    id: sessionId,
+    alias: "session-019ff5f7",
+    cwd,
+    discoverable: true,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const peer = await service.init();
+  assert.equal(peer.alias, "session-76732fe0a69c");
+});
+
+test("Pi session name is display metadata and does not overwrite the mail alias", async () => {
+  const { a } = await makeServices();
+  await a.syncSessionName("Refactor auth");
+  await a.configure({ alias: "backend" });
+  await a.syncSessionName("Refactor auth v2");
+
+  const self = (await a.listProjectSessions({ includeInactive: true })).find((peer) => peer.self);
+  assert.equal(self?.alias, "backend");
+  assert.equal(self?.sessionName, "Refactor auth v2");
+  assert.equal((await a.status()).sessionName, "Refactor auth v2");
+});
+
 test("human supervisor session listing includes self and peer-hidden sessions", async () => {
   const { a, b } = await makeServices();
   await b.configure({ discoverable: false });
@@ -124,7 +185,7 @@ test("sending to an inactive historical mailbox succeeds and reports it inactive
   assert.equal((await inbox(b))[0].id, message.id);
 });
 
-test("message references accept unambiguous ID prefixes", async () => {
+test("message references accept displayed short IDs and historical prefixes", async () => {
   const { a, b } = await makeServices();
 
   const first = await a.send({
@@ -136,7 +197,7 @@ test("message references accept unambiguous ID prefixes", async () => {
   const read = await b.listInbox({ messageId: first.shortId, markPresented: false }) as MailMessage;
   assert.equal(read.id, first.id);
 
-  const reply = await b.send({ replyTo: first.shortId, body: "Short ID resolved." });
+  const reply = await b.send({ replyTo: first.id.slice(0, 8), body: "Historical prefix resolved." });
   assert.equal(reply.inReplyTo, first.id);
   assert.equal((await a.thread(reply.shortId)).length, 2);
 });

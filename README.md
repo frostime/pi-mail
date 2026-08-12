@@ -27,6 +27,7 @@ extensions/pi-mail/
 ├── index.ts
 ├── types.ts
 ├── attention-policy.ts
+├── identity.ts
 ├── project-root.ts
 ├── fs-store.ts
 ├── mail-service.ts
@@ -69,13 +70,13 @@ Peer mail is quiet by default. Add `"notify": true` only when direct `To` recipi
 }
 ```
 
-Message references accept a full ID or an unambiguous prefix of at least six characters. `inbox` without `message_id` and `thread` return compact body previews; `inbox` with `message_id` reads one received message in full.
+Session and message references accept full IDs, the displayed 12-hex short IDs, or historical unambiguous prefixes of at least six characters. Short IDs use the UUID random tail rather than the time-heavy UUIDv7 prefix, so sessions started close together remain visually distinct. `inbox` without `message_id` and `thread` return compact body previews; `inbox` with `message_id` reads one received message in full.
 
 The reserved address `user` represents the local human supervisor. Human-origin Web UI messages enter Pi as genuine user messages; peer messages never do.
 
 ## Identity, offline delivery, and forks
 
-The immutable mailbox ID is the Pi session UUID. A mutable alias is derived from the Pi session name when available. Normal discovery lists active, discoverable sessions; `include_inactive: true` also exposes historical mailboxes.
+The immutable mailbox ID is the Pi session UUID. The mail alias and Pi conversation name are separate metadata: the alias is a mutable mail address, while the session name mirrors Pi's `/name` display name for human inspection. Normal discovery lists active, discoverable sessions; `include_inactive: true` also exposes historical mailboxes.
 
 An inactive historical mailbox remains addressable. Sending to it persists the message normally, and the tool result explicitly reports that the recipient is inactive. When that Pi session is resumed, its mailbox is available again.
 
@@ -106,11 +107,11 @@ Durable delivery and model attention are separate. Ordinary peer mail enters the
 
 ## Web UI
 
-Run `/mail-ui` to start a temporary token-protected server on `127.0.0.1`. The UI supports English and Chinese, automatic/light/dark themes, one or many To/Cc recipients, the current session, and **To: all active**. Session, recipient, and message lists scroll within their panels.
+Run `/mail-ui` to start a temporary token-protected server on `127.0.0.1`. The UI supports English and Chinese, automatic/light/dark themes, one or many To/Cc recipients, the current session, and **To: all active**. Session cards show the Pi conversation name when available, plus the mail alias and short ID. Session, recipient, and message lists scroll within their panels.
 
 The human supervisor can delete an **inactive** session mailbox from the Sessions panel. This removes that session's inbox delivery state and makes the mailbox no longer addressable. Shared canonical messages remain available to other participants so deleting one mailbox does not rewrite everyone else's history. If that same Pi session UUID is later resumed, it re-registers as a fresh mailbox identity with no reconstructed inbox state.
 
-Use `/mail-ui close` or the page's close button to stop the server. Mail delivery itself does not depend on the Web UI.
+Use `/mail-ui close` or the page's close button to stop the server. The UI server is also closed automatically when the Pi session that started it shuts down or is replaced; reopening `/mail-ui` after an in-page close starts a fresh server. Mail delivery itself does not depend on the Web UI.
 
 ## Development
 

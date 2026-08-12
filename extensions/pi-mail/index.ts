@@ -202,10 +202,15 @@ export default function piMailExtension(pi: ExtensionAPI): void {
       sessionId: ctx.sessionManager.getSessionId(),
       runtimeId,
     });
-    await service.init({ alias: pi.getSessionName() || undefined });
+    await service.init({ sessionName: pi.getSessionName() || undefined });
 
     heartbeatTimer = setInterval(() => {
-      service?.heartbeat().catch((error) => console.error("[pi-mail] heartbeat failed:", error));
+      const activeService = service;
+      if (!activeService) return;
+      Promise.all([
+        activeService.syncSessionName(pi.getSessionName() || undefined),
+        activeService.heartbeat(),
+      ]).catch((error) => console.error("[pi-mail] heartbeat failed:", error));
     }, 5_000);
     heartbeatTimer.unref();
 
@@ -218,7 +223,10 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     clearTimers();
     if (webUi) await webUi.close().catch(() => {});
     webUi = null;
-    if (service) await service.close().catch(() => {});
+    if (service) {
+      await service.syncSessionName(pi.getSessionName() || undefined).catch(() => {});
+      await service.close().catch(() => {});
+    }
     service = null;
     currentCtx = null;
     queuedMessageIds.clear();
@@ -233,6 +241,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
         return;
       }
 
+      await service.syncSessionName(pi.getSessionName() || undefined);
+
       if (args.trim().toLowerCase() === "close") {
         if (!webUi) {
           ctx.ui.notify("Pi Mail Web UI is not running.", "info");
@@ -244,7 +254,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      if (!webUi) webUi = await startWebUi(service);
+      if (!webUi?.isRunning()) webUi = await startWebUi(service);
       openWebUiInBrowser(webUi.url);
       ctx.ui.notify(`Pi Mail Web UI: ${webUi.url}`, "info");
     },
@@ -273,6 +283,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
 
     async execute(_toolCallId, params) {
       if (!service) throw new Error("Pi Mail is not ready for the current session");
+      await service.syncSessionName(pi.getSessionName() || undefined);
 
       switch (params.action) {
         case "status":

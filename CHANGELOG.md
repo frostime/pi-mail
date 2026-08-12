@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0
+
+Short IDs no longer use the leading eight characters of a session UUID. Pi session IDs are time-ordered UUIDs, so sessions created close together can share those prefixes; Pi Mail now displays a stable 12-hex suffix and accepts that short ID for both recipient and message references while preserving legacy prefix resolution. Default generated mail aliases migrate from the old prefix form when the session next registers.
+
+Pi conversation names are now stored independently from mail aliases and surfaced in discovery/tool output and the Web UI. The extension synchronizes `/name` changes during its heartbeat without silently changing the mailbox address.
+
+Web UI lifecycle handling is stricter: session shutdown still closes the server automatically, and a server closed from inside the page is now recognized as stopped so a later `/mail-ui` command starts a fresh instance instead of reopening a stale URL.
+
 ## 0.4.0
 
 Peer mail is now quiet by default. `send` accepts `notify: true` for immediate attention from direct `To` recipients, while `Cc` remains silent. Ordinary pending mail produces only a lightweight mailbox-count reminder after three accumulated messages, and inactive recipients are explicitly reported in the sender-facing result while delivery still succeeds durably.

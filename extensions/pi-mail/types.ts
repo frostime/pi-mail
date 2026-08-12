@@ -5,6 +5,8 @@ export interface PeerRecord {
   version: 1;
   id: string;
   alias: string;
+  /** Pi conversation display name; independent from the mutable mail alias. */
+  sessionName?: string;
   cwd: string;
   discoverable: boolean;
   createdAt: string;
@@ -54,6 +56,7 @@ export interface PeerAddress {
   id: string;
   shortId: string;
   alias: string;
+  sessionName?: string;
 }
 
 export interface MailMessage {
@@ -77,6 +80,7 @@ export interface MailStatus {
   id: string;
   shortId: string;
   alias: string;
+  sessionName?: string;
   discoverable: boolean;
   mailRoot: string;
   unpresented: { to: number; cc: number };

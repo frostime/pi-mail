@@ -22,7 +22,7 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-web-"));
   const a = new MailService({ cwd, sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", runtimeId: "runtime-a" });
   const b = new MailService({ cwd, sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", runtimeId: "runtime-b" });
-  await a.init({ alias: "alice" });
+  await a.init({ alias: "alice", sessionName: "Primary conversation" });
   await b.init({ alias: "bob" });
 
   const ui = await startWebUi(a);
@@ -38,9 +38,10 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     const { base, headers } = authorization(ui.url);
     assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
-    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; self?: boolean }> };
+    const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; self?: boolean; sessionName?: string }> };
     assert.equal(state.peers.length, 2);
     assert.equal(state.peers.filter((peer) => peer.self).length, 1);
+    assert.equal(state.peers.find((peer) => peer.self)?.sessionName, "Primary conversation");
 
     const sendResponse = await fetch(`${base}/api/send`, {
       method: "POST",
@@ -72,6 +73,8 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
       body: "{}",
     });
     assert.equal(closeResponse.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    assert.equal(ui.isRunning(), false);
   } finally {
     await ui.close();
   }
