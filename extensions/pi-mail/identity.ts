@@ -1,9 +1,23 @@
-export const MIN_ID_FRAGMENT_LENGTH = 6;
+import { randomInt } from "node:crypto";
+
+export const SESSION_ID_FRAGMENT_MIN_LENGTH = 6;
 export const SESSION_SHORT_ID_LENGTH = 12;
-export const MESSAGE_SHORT_ID_LENGTH = 8;
+export const LEGACY_MESSAGE_REF_MIN_LENGTH = 6;
+export const MESSAGE_ID_LENGTH = 7;
+
+const MESSAGE_ID_SPACE = 36 ** MESSAGE_ID_LENGTH;
+const UUID_MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function compactId(id: string): string {
   return id.replaceAll("-", "").toLowerCase();
+}
+
+export function generateMessageId(): string {
+  return randomInt(MESSAGE_ID_SPACE).toString(36).padStart(MESSAGE_ID_LENGTH, "0");
+}
+
+export function isLegacyUuidMessageId(id: string): boolean {
+  return UUID_MESSAGE_ID.test(id);
 }
 
 /**
@@ -15,9 +29,8 @@ export function shortSessionId(id: string): string {
   return compact.slice(-SESSION_SHORT_ID_LENGTH);
 }
 
-export function shortMessageId(id: string): string {
-  const compact = compactId(id);
-  return compact.slice(0, MESSAGE_SHORT_ID_LENGTH);
+export function legacyMessageRef(id: string): string {
+  return compactId(id).slice(0, LEGACY_MESSAGE_REF_MIN_LENGTH);
 }
 
 /**
@@ -27,7 +40,7 @@ export function shortMessageId(id: string): string {
  */
 export function matchesIdFragment(id: string, fragment: string): boolean {
   const query = compactId(fragment.trim());
-  if (query.length < MIN_ID_FRAGMENT_LENGTH) return false;
+  if (query.length < SESSION_ID_FRAGMENT_MIN_LENGTH) return false;
 
   const compact = compactId(id);
   return compact.startsWith(query) || compact.endsWith(query);

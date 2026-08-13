@@ -166,17 +166,23 @@ export class FsMailStore {
     return values;
   }
 
-  async putMessage(message: MessageRecord): Promise<void> {
+  async tryCreateMessage(message: MessageRecord): Promise<boolean> {
     const file = this.messageFile(message.id);
     await mkdir(path.dirname(file), { recursive: true });
 
-    // Canonical messages are immutable. "wx" converts an astronomically
-    // unlikely ID collision into a visible failure instead of silent overwrite.
-    await writeFile(file, `${JSON.stringify(message, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
+    // Exclusive creation is the collision check. A separate existence check
+    // would leave a race window between the check and this write.
+    try {
+      await writeFile(file, `${JSON.stringify(message, null, 2)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      return true;
+    } catch (error) {
+      if (errorCode(error) === "EEXIST") return false;
+      throw error;
+    }
   }
 
   async getMessage(messageId: string): Promise<MessageRecord | null> {

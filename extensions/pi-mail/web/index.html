@@ -396,7 +396,7 @@
           const recipients = message.to.map((p) => p.alias).join(", ");
           const cc = message.cc.length ? ` · Cc: ${message.cc.map((p) => p.alias).join(", ")}` : "";
           const origin = message.senderKind === "human" ? t("user") : message.from.alias;
-          const meta = element("div", "message-meta", `${origin} → ${recipients}${cc} · ${message.shortId}`);
+          const meta = element("div", "message-meta", `${origin} → ${recipients}${cc} · ${message.id}`);
           const body = element("div", "message-body", message.body);
           const chips = element("div", "chips");
           message.recipients.forEach((recipient) => {

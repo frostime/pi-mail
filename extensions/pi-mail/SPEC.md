@@ -26,9 +26,11 @@ The reserved address `user` maps to the human principal `human-local`. It is add
 
 ### Address resolution
 
-Session short IDs use the random UUID tail rather than the leading timestamp-like portion; nearby time-ordered UUIDs can otherwise share a visible prefix. Address resolution accepts an exact session ID, an unambiguous leading or trailing ID fragment of at least six characters, or an alias. Message references used by `reply_to`, `inbox`, and `thread` follow the same exact-or-unambiguous-fragment rule.
+Session short IDs use the random UUID tail rather than the leading timestamp-like portion; nearby time-ordered UUIDs can otherwise share a visible prefix. Session address resolution accepts an exact session ID, an unambiguous leading or trailing ID fragment of at least six characters, or an alias.
 
-Ambiguous ID fragments fail and list candidates. Explicitly duplicated aliases are resolved to the one active match only when exactly one matching session is active; otherwise the operation fails with the ambiguous candidates instead of silently choosing a mailbox.
+New message IDs are complete seven-character lowercase base-36 references. `reply_to`, `inbox`, and `thread` require an exact message ID; a displayed message ID must never become ambiguous as more mail arrives. Creation uses exclusive canonical-file creation as the cross-process collision check and retries a newly generated ID on `EEXIST`. UUID-era messages remain readable and display their complete UUID. Their old six-or-more-character leading or trailing references remain accepted only as a compatibility input path; they are not displayed for new or legacy messages.
+
+Ambiguous legacy message or session ID fragments fail and list candidates. Explicitly duplicated aliases are resolved to the one active match only when exactly one matching session is active; otherwise the operation fails with the ambiguous candidates instead of silently choosing a mailbox.
 
 ## Project scope and persistence
 
@@ -46,7 +48,7 @@ Pi Mail has no third-party runtime dependencies. Node built-ins and Pi-provided 
 
 ## Message and thread semantics
 
-A message has one sender, one or more `To` recipients, optional `Cc` recipients, a subject, body, immutable message ID, thread ID, optional parent message ID, creation time, and an optional notification hint. The same recipient must not appear in both `To` and `Cc`; `To` wins during normalization.
+A message has one sender, one or more `To` recipients, optional `Cc` recipients, a subject, body, immutable message ID, thread ID, optional parent message ID, creation time, and an optional notification hint. The same recipient must not appear in both `To` and `Cc`; `To` wins during normalization. A root message's ID is also its internal thread ID; replies preserve it. Thread IDs are storage relationships, not Agent references: Agent operations locate a thread through any message ID, so model-facing mail content must not expose a separate thread ID.
 
 `To` and `Cc` are addressing semantics, not task semantics. Replies preserve `threadId` and set `inReplyTo`. A plain reply addresses the parent sender. `reply_all` retains the other original `To`/`Cc` participants, excludes the current sender, and deduplicates recipients. It is a snapshot of the original participants; later thread participants are not added automatically.
 
@@ -74,7 +76,7 @@ The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count th
 
 `inbox` without `message_id` is a list view and must use bounded body previews. Mail previews must include the message creation timestamp so an Agent can establish message order. `inbox` with a specific `message_id` returns that received message in full and normally marks its delivery presented. Full messages must include the creation timestamp and delivery kind when available. `thread` and `sent` use bounded or summary views and must not mark deliveries presented; both must retain each message's creation timestamp. `wait` is preview-oriented and must not mark deliveries presented, but its returned previews must include creation timestamps. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
 
-Pi-injected peer and human messages must also include the message creation timestamp so the conversational presentation preserves ordering context.
+Pi-injected peer and human messages must also include the message creation timestamp so the conversational presentation preserves ordering context. Agent-facing message views expose the complete usable message ID exactly once and omit internal thread IDs. Session IDs appear in discovery, status, or ambiguity resolution where they are actionable; routine mail previews, full messages, send results, and injected peer mail use aliases without repeating session IDs.
 
 Mail sent from the Web UI must be injected through Pi's user-message API on an active recipient runtime so the authority boundary is truthful. Web UI observation is read-only with respect to delivery state.
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+New messages now use complete seven-character lowercase base-36 IDs with atomic collision retries. Agent-facing mail views expose only the actionable message ID, omit internal thread IDs, and no longer repeat session IDs in routine mail output. Existing UUID messages remain readable through their legacy short references, but display their complete UUID.
+
 ## 0.6.2
 
 Update documentation.
