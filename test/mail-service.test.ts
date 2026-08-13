@@ -197,7 +197,6 @@ test("new message IDs are complete seven-character references", async () => {
   });
 
   assert.match(first.id, /^[0-9a-z]{7}$/);
-  assert.equal(first.shortId, first.id);
 
   const read = await b.listInbox({ messageId: first.id, markPresented: false }) as MailMessage;
   assert.equal(read.id, first.id);
@@ -216,7 +215,7 @@ test("UUID-era messages retain full IDs while accepting legacy short references"
   const id = "1234abcd-1111-4111-8111-123456789abc";
   const createdAt = new Date().toISOString();
 
-  await a.store.putMessage({
+  await a.store.tryCreateMessage({
     version: 1,
     id,
     from: a.sessionId,
@@ -239,7 +238,7 @@ test("UUID-era messages retain full IDs while accepting legacy short references"
   });
 
   const listed = (await inbox(b)).find((message) => message.id === id);
-  assert.equal(listed?.shortId, id);
+  assert.equal(listed?.id, id);
   const read = await b.listInbox({ messageId: "1234abcd", markPresented: false }) as MailMessage;
   assert.equal(read.id, id);
 });
@@ -251,7 +250,7 @@ test("ambiguous legacy message references list complete UUID candidates", async 
   const createdAt = new Date().toISOString();
 
   for (const [id, subject] of [[firstId, "First"], [secondId, "Second"]] as const) {
-    await a.store.putMessage({
+    await a.store.tryCreateMessage({
       version: 1,
       id,
       from: a.sessionId,
@@ -282,16 +281,12 @@ test("ambiguous legacy message references list complete UUID candidates", async 
 
 test("message creation retries an atomic ID collision", async () => {
   const { a } = await makeServices();
-  const putMessage = a.store.putMessage.bind(a.store);
+  const tryCreateMessage = a.store.tryCreateMessage.bind(a.store);
   let attempts = 0;
-  a.store.putMessage = async (message) => {
+  a.store.tryCreateMessage = async (message) => {
     attempts += 1;
-    if (attempts === 1) {
-      const error = new Error("collision") as NodeJS.ErrnoException;
-      error.code = "EEXIST";
-      throw error;
-    }
-    await putMessage(message);
+    if (attempts === 1) return false;
+    return tryCreateMessage(message);
   };
 
   const sent = await a.send({ to: ["bob"], body: "Retry once." });
@@ -299,6 +294,21 @@ test("message creation retries an atomic ID collision", async () => {
   assert.equal(attempts, 2);
   assert.match(sent.id, /^[0-9a-z]{7}$/);
   assert.equal((await a.store.getMessage(sent.id))?.body, "Retry once.");
+});
+
+test("message creation stops after repeated ID collisions", async () => {
+  const { a } = await makeServices();
+  let attempts = 0;
+  a.store.tryCreateMessage = async () => {
+    attempts += 1;
+    return false;
+  };
+
+  await assert.rejects(
+    () => a.send({ to: ["bob"], body: "Never persisted." }),
+    /Unable to allocate a unique message ID after 10 attempts/,
+  );
+  assert.equal(attempts, 10);
 });
 
 test("reply-all preserves the thread and original participants", async () => {
@@ -463,7 +473,7 @@ test("Pi Mail 0.1 messages without senderKind remain session-origin messages", a
   const createdAt = new Date().toISOString();
   const id = "legacy-message";
 
-  await a.store.putMessage({
+  await a.store.tryCreateMessage({
     version: 1,
     id,
     from: a.sessionId,

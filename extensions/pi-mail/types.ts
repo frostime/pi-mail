@@ -63,7 +63,6 @@ export interface PeerAddress {
 
 export interface MailMessage {
   id: string;
-  shortId: string;
   senderKind: SenderKind;
   from: PeerAddress;
   to: PeerAddress[];
@@ -119,7 +118,6 @@ export interface SentRecipient extends PeerAddress {
 
 export interface SentMessageSummary {
   id: string;
-  shortId: string;
   subject: string;
   threadId: string;
   createdAt: string;

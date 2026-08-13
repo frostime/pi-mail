@@ -7,8 +7,8 @@ import {
   isLegacyUuidMessageId,
   legacyMessageRef,
   matchesIdFragment,
-  MIN_ID_FRAGMENT_LENGTH,
-  shortMessageId,
+  LEGACY_MESSAGE_REF_MIN_LENGTH,
+  SESSION_ID_FRAGMENT_MIN_LENGTH,
   shortSessionId,
 } from "./identity.ts";
 import { resolveMailRoot } from "./project-root.ts";
@@ -35,6 +35,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const MAX_WAIT_TIMEOUT_MS = 300_000;
 const WAIT_POLL_INTERVAL_MS = 250;
 const WAIT_RESULT_LIMIT = 20;
+const MAX_MESSAGE_ID_ATTEMPTS = 10;
 const GENERATED_ALIAS_COUNT = 1_000;
 export const HUMAN_PRINCIPAL_ID = "human-local";
 export const HUMAN_PRINCIPAL_ALIAS = "user";
@@ -58,12 +59,6 @@ export interface SendMailInput {
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
 }
 
 function defaultAliasNumber(sessionId: string): number {
@@ -542,7 +537,6 @@ export class MailService {
     for (const message of messages) {
       output.push({
         id: message.id,
-        shortId: shortMessageId(message.id),
         subject: message.subject,
         threadId: message.threadId,
         createdAt: message.createdAt,
@@ -654,12 +648,11 @@ export class MailService {
     if (toIds.length === 0) throw new Error("Message has no To recipients after resolution");
 
     const createdAt = nowIso();
-    let message: MessageRecord;
+    let message: MessageRecord | null = null;
 
-    // putMessage uses exclusive file creation (`wx`), so concurrent senders
-    // cannot both claim the same ID. A separate existence check would add a
-    // TOCTOU race; retry only the EEXIST collision reported by that atomic write.
-    while (true) {
+    // The store claims each candidate atomically, so concurrent senders cannot
+    // both create the same canonical message.
+    for (let attempt = 0; attempt < MAX_MESSAGE_ID_ATTEMPTS; attempt += 1) {
       const id = generateMessageId();
       message = {
         version: 1,
@@ -677,12 +670,12 @@ export class MailService {
         createdAt,
       };
 
-      try {
-        await this.store.putMessage(message);
-        break;
-      } catch (error) {
-        if (errorCode(error) !== "EEXIST") throw error;
-      }
+      if (await this.store.tryCreateMessage(message)) break;
+      message = null;
+    }
+
+    if (!message) {
+      throw new Error(`Unable to allocate a unique message ID after ${MAX_MESSAGE_ID_ATTEMPTS} attempts`);
     }
 
     await this.deliver(message, "to", toIds);
@@ -709,7 +702,7 @@ export class MailService {
 
     if (await this.store.getMessage(query)) return query;
 
-    if (query.replaceAll("-", "").length >= MIN_ID_FRAGMENT_LENGTH) {
+    if (query.replaceAll("-", "").length >= LEGACY_MESSAGE_REF_MIN_LENGTH) {
       const matches = (await this.store.listMessages())
         .filter((message) => isLegacyUuidMessageId(message.id) && matchesIdFragment(message.id, query));
 
@@ -738,7 +731,7 @@ export class MailService {
     const exactId = peers.find((peer) => peer.id === query);
     if (exactId) return exactId.id;
 
-    if (query.replaceAll("-", "").length >= MIN_ID_FRAGMENT_LENGTH) {
+    if (query.replaceAll("-", "").length >= SESSION_ID_FRAGMENT_MIN_LENGTH) {
       const idMatches = peers.filter((peer) => matchesIdFragment(peer.id, query));
       if (idMatches.length === 1) return idMatches[0].id;
       if (idMatches.length > 1) {
@@ -793,7 +786,6 @@ export class MailService {
 
     return {
       id: message.id,
-      shortId: shortMessageId(message.id),
       senderKind: senderKindOf(message),
       from: label(message.from, message.fromAlias),
       to: message.to.map((id) => label(id)),

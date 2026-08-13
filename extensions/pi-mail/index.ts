@@ -37,7 +37,7 @@ function toolResult(action: MailAction, value: unknown) {
 
 function humanMailContent(mail: MailMessage): string {
   return [
-    `[Pi Mail · message ${mail.shortId}]`,
+    `[Pi Mail · message ${mail.id}]`,
     `Sent: ${mail.createdAt}`,
     `Subject: ${mail.subject}`,
     "",
