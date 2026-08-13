@@ -170,8 +170,10 @@ export class FsMailStore {
     const file = this.messageFile(message.id);
     await mkdir(path.dirname(file), { recursive: true });
 
-    // Canonical messages are immutable. "wx" converts an astronomically
-    // unlikely ID collision into a visible failure instead of silent overwrite.
+    // Exclusive creation is the collision check: checking for the filename
+    // first would leave a race window between the check and this write.
+    // The service catches EEXIST and generates a fresh ID; other write errors
+    // must remain visible instead of being mistaken for collisions.
     await writeFile(file, `${JSON.stringify(message, null, 2)}\n`, {
       encoding: "utf8",
       flag: "wx",

@@ -2,7 +2,15 @@ import { randomUUID } from "node:crypto";
 
 import { FsMailStore } from "./fs-store.ts";
 import { normalizeReminderMinutes } from "./attention-policy.ts";
-import { matchesIdFragment, MIN_ID_FRAGMENT_LENGTH, shortMessageId, shortSessionId } from "./identity.ts";
+import {
+  generateMessageId,
+  isLegacyUuidMessageId,
+  legacyMessageRef,
+  matchesIdFragment,
+  MIN_ID_FRAGMENT_LENGTH,
+  shortMessageId,
+  shortSessionId,
+} from "./identity.ts";
 import { resolveMailRoot } from "./project-root.ts";
 import type {
   DeliveryRecord,
@@ -16,6 +24,7 @@ import type {
   ProjectMessageSummary,
   RecipientKind,
   SentMessageSummary,
+  SentRecipient,
   SenderKind,
   WaitResult,
 } from "./types.ts";
@@ -49,6 +58,12 @@ export interface SendMailInput {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
 }
 
 function defaultAliasNumber(sessionId: string): number {
@@ -638,25 +653,38 @@ export class MailService {
     ccIds = unique(ccIds).filter((id) => !toIds.includes(id));
     if (toIds.length === 0) throw new Error("Message has no To recipients after resolution");
 
-    const id = randomUUID();
     const createdAt = nowIso();
-    const message: MessageRecord = {
-      version: 1,
-      id,
-      senderKind: input.senderKind,
-      from: input.senderId,
-      fromAlias: input.senderAlias,
-      to: toIds,
-      cc: ccIds,
-      subject: String(subject ?? "(no subject)").trim() || "(no subject)",
-      body: input.body,
-      notify: input.notify === true,
-      threadId: threadId ?? id,
-      inReplyTo,
-      createdAt,
-    };
+    let message: MessageRecord;
 
-    await this.store.putMessage(message);
+    // putMessage uses exclusive file creation (`wx`), so concurrent senders
+    // cannot both claim the same ID. A separate existence check would add a
+    // TOCTOU race; retry only the EEXIST collision reported by that atomic write.
+    while (true) {
+      const id = generateMessageId();
+      message = {
+        version: 1,
+        id,
+        senderKind: input.senderKind,
+        from: input.senderId,
+        fromAlias: input.senderAlias,
+        to: toIds,
+        cc: ccIds,
+        subject: String(subject ?? "(no subject)").trim() || "(no subject)",
+        body: input.body,
+        notify: input.notify === true,
+        threadId: threadId ?? id,
+        inReplyTo,
+        createdAt,
+      };
+
+      try {
+        await this.store.putMessage(message);
+        break;
+      } catch (error) {
+        if (errorCode(error) !== "EEXIST") throw error;
+      }
+    }
+
     await this.deliver(message, "to", toIds);
     await this.deliver(message, "cc", ccIds);
     return this.decorateMessage(message);
@@ -681,23 +709,21 @@ export class MailService {
 
     if (await this.store.getMessage(query)) return query;
 
-    if (query.replaceAll("-", "").length < MIN_ID_FRAGMENT_LENGTH) {
-      throw new Error(`Unknown message "${query}". Message ID fragments must be at least ${MIN_ID_FRAGMENT_LENGTH} characters.`);
+    if (query.replaceAll("-", "").length >= MIN_ID_FRAGMENT_LENGTH) {
+      const matches = (await this.store.listMessages())
+        .filter((message) => isLegacyUuidMessageId(message.id) && matchesIdFragment(message.id, query));
+
+      if (matches.length === 1) return matches[0].id;
+      if (matches.length > 1) {
+        const candidates = matches
+          .slice(0, 5)
+          .map((message) => `${legacyMessageRef(message.id)} (${message.id})`)
+          .join(", ");
+        throw new Error(`Ambiguous legacy message id fragment "${query}". Candidates: ${candidates}`);
+      }
     }
 
-    const matches = (await this.store.listMessages())
-      .filter((message) => matchesIdFragment(message.id, query));
-
-    if (matches.length === 1) return matches[0].id;
-    if (matches.length > 1) {
-      const candidates = matches
-        .slice(0, 5)
-        .map((message) => `${shortMessageId(message.id)} (${message.id})`)
-        .join(", ");
-      throw new Error(`Ambiguous message id fragment "${query}". Candidates: ${candidates}`);
-    }
-
-    throw new Error(`Unknown message "${query}". Use mail action=inbox, sent, or thread with a known message ID.`);
+    throw new Error(`Unknown message "${query}". Use the complete message ID shown by inbox, sent, wait, or thread.`);
   }
 
   private async resolveOne(address: string): Promise<string> {

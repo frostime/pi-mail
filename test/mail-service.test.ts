@@ -8,7 +8,7 @@ import test from "node:test";
 import { HUMAN_PRINCIPAL_ID, MailService } from "../extensions/pi-mail/mail-service.ts";
 import { isOverdueDirectMail, mailboxNoticeBucket, normalizeReminderMinutes, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
 import { resolveProjectRoot } from "../extensions/pi-mail/project-root.ts";
-import { BODY_PREVIEW_CHARS, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
+import { BODY_PREVIEW_CHARS, formatPeerMailContent, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
 import { shortSessionId } from "../extensions/pi-mail/identity.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
 
@@ -187,21 +187,118 @@ test("sending to an inactive historical mailbox succeeds and reports it inactive
   assert.equal((await inbox(b))[0].id, message.id);
 });
 
-test("message references accept unambiguous ID prefixes", async () => {
+test("new message IDs are complete seven-character references", async () => {
   const { a, b } = await makeServices();
 
   const first = await a.send({
     to: ["bob"],
-    subject: "Prefix lookup",
-    body: "Use the displayed short ID to reply.",
+    subject: "Exact lookup",
+    body: "Use the complete displayed message ID to reply.",
   });
 
-  const read = await b.listInbox({ messageId: first.shortId, markPresented: false }) as MailMessage;
-  assert.equal(read.id, first.id);
+  assert.match(first.id, /^[0-9a-z]{7}$/);
+  assert.equal(first.shortId, first.id);
 
-  const reply = await b.send({ replyTo: first.shortId, body: "Short ID resolved." });
+  const read = await b.listInbox({ messageId: first.id, markPresented: false }) as MailMessage;
+  assert.equal(read.id, first.id);
+  await assert.rejects(
+    () => b.listInbox({ messageId: first.id.slice(0, 6), markPresented: false }),
+    /Unknown message/,
+  );
+
+  const reply = await b.send({ replyTo: first.id, body: "Complete ID resolved." });
   assert.equal(reply.inReplyTo, first.id);
-  assert.equal((await a.thread(reply.shortId)).length, 2);
+  assert.equal((await a.thread(reply.id)).length, 2);
+});
+
+test("UUID-era messages retain full IDs while accepting legacy short references", async () => {
+  const { a, b } = await makeServices();
+  const id = "1234abcd-1111-4111-8111-123456789abc";
+  const createdAt = new Date().toISOString();
+
+  await a.store.putMessage({
+    version: 1,
+    id,
+    from: a.sessionId,
+    fromAlias: "alice",
+    to: [b.sessionId],
+    cc: [],
+    subject: "Legacy UUID",
+    body: "Still addressable after the ID migration.",
+    threadId: id,
+    inReplyTo: null,
+    createdAt,
+  });
+  await a.store.putDelivery({
+    version: 1,
+    messageId: id,
+    recipientId: b.sessionId,
+    kind: "to",
+    deliveredAt: createdAt,
+    presentedAt: null,
+  });
+
+  const listed = (await inbox(b)).find((message) => message.id === id);
+  assert.equal(listed?.shortId, id);
+  const read = await b.listInbox({ messageId: "1234abcd", markPresented: false }) as MailMessage;
+  assert.equal(read.id, id);
+});
+
+test("ambiguous legacy message references list complete UUID candidates", async () => {
+  const { a, b } = await makeServices();
+  const firstId = "1234abcd-1111-4111-8111-123456789abc";
+  const secondId = "1234abcd-2222-4222-8222-987654321def";
+  const createdAt = new Date().toISOString();
+
+  for (const [id, subject] of [[firstId, "First"], [secondId, "Second"]] as const) {
+    await a.store.putMessage({
+      version: 1,
+      id,
+      from: a.sessionId,
+      fromAlias: "alice",
+      to: [b.sessionId],
+      cc: [],
+      subject,
+      body: "Legacy message",
+      threadId: id,
+      inReplyTo: null,
+      createdAt,
+    });
+    await a.store.putDelivery({
+      version: 1,
+      messageId: id,
+      recipientId: b.sessionId,
+      kind: "to",
+      deliveredAt: createdAt,
+      presentedAt: null,
+    });
+  }
+
+  await assert.rejects(
+    () => b.listInbox({ messageId: "1234ab", markPresented: false }),
+    (error: Error) => error.message.includes(firstId) && error.message.includes(secondId),
+  );
+});
+
+test("message creation retries an atomic ID collision", async () => {
+  const { a } = await makeServices();
+  const putMessage = a.store.putMessage.bind(a.store);
+  let attempts = 0;
+  a.store.putMessage = async (message) => {
+    attempts += 1;
+    if (attempts === 1) {
+      const error = new Error("collision") as NodeJS.ErrnoException;
+      error.code = "EEXIST";
+      throw error;
+    }
+    await putMessage(message);
+  };
+
+  const sent = await a.send({ to: ["bob"], body: "Retry once." });
+
+  assert.equal(attempts, 2);
+  assert.match(sent.id, /^[0-9a-z]{7}$/);
+  assert.equal((await a.store.getMessage(sent.id))?.body, "Retry once.");
 });
 
 test("reply-all preserves the thread and original participants", async () => {
@@ -351,6 +448,14 @@ test("mail views include creation timestamps while keeping previews bounded", as
   assert.match(listText, /…/);
   assert.match(threadText, /…/);
   assert.ok(fullText.includes(body));
+  assert.equal(fullText.match(new RegExp(message.id, "g"))?.length, 1);
+  assert.doesNotMatch(fullText, /Message-ID:|Thread:/);
+  assert.match(threadText, /^Thread · 1 message\n/);
+
+  const notifying = { ...message, notify: true };
+  const injectedText = formatPeerMailContent(notifying);
+  assert.equal(injectedText.match(new RegExp(message.id, "g"))?.length, 1);
+  assert.doesNotMatch(injectedText, /thread_id=/);
 });
 
 test("Pi Mail 0.1 messages without senderKind remain session-origin messages", async () => {

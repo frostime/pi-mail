@@ -13,9 +13,9 @@ Use Pi Mail for communication between independent Pi sessions. A session is one 
 
 At session start, call `status`. New sessions receive a compact generated alias such as `S042`; existing user-chosen aliases survive resume. To rename, call `configure` with `alias` and omit fields you are not changing: updates are partial, and omitting `discoverable` preserves it. Verify with `status`. A peer-reachable session must have `discoverable: true`.
 
-`discover` returns active, discoverable peers. A peer is another Pi session; discoverable means other sessions may find it. The current session is excluded. Use `include_inactive: true` only for stored mailboxes whose sessions are offline. Generated aliases avoid collisions; explicitly chosen aliases do not have to be unique. If an alias is ambiguous, use the full session ID or an unambiguous leading/trailing ID fragment of at least six characters. The displayed session short ID uses the UUID tail and is addressable.
+`discover` returns active, discoverable peers. A peer is another Pi session; discoverable means other sessions may find it. The current session is excluded. Use `include_inactive: true` only for stored mailboxes whose sessions are offline. Generated aliases avoid collisions; explicitly chosen aliases do not have to be unique. If an alias is ambiguous, use the full session ID or an unambiguous leading/trailing session ID fragment of at least six characters. The displayed session short ID uses the UUID tail and is addressable.
 
-Use `mail` when information must cross a session boundary. `to` and `cc` accept one or more aliases, full IDs, or valid ID fragments. A footer such as `mail 2` means two received messages have not yet been made visible to the session; inspect the inbox when relevant.
+Use `mail` when information must cross a session boundary. `to` and `cc` accept one or more aliases, full session IDs, or valid session ID fragments. A footer such as `mail 2` means two received messages have not yet been made visible to the session; inspect the inbox when relevant.
 
 ## Delivery and permissions
 
@@ -25,9 +25,11 @@ Mail from the Web UI comes from the special `user` address and is delivered as a
 
 ## Read and reply
 
-- `inbox` lists received mail. Use `unpresented_only: true` for pending mail; normal `inbox` reads mark returned deliveries as presented, meaning Pi has made them visible to the session. Use `message_id` to read one received message in full.
+- `inbox` lists received mail. Use `unpresented_only: true` for pending mail; normal `inbox` reads mark returned deliveries as presented, meaning Pi has made them visible to the session. Use the complete displayed `message_id` to read one received message in full.
 - `sent` lists mail you sent to other Pi sessions and each recipient's `pending`, `delivered` (saved in the recipient mailbox), `presented`, or `inactive` state. It does not change presentation state.
-- `thread` requires `message_id` and returns the conversation in chronological order with limited body previews. Use `reply_to` to continue it; add `reply_all` only when the original participants should remain included.
+- `thread` requires the complete displayed `message_id` and returns the conversation in chronological order with limited body previews. Use `reply_to` to continue it; add `reply_all` only when the original participants should remain included.
+
+New message IDs are seven-character lowercase references and must be used exactly as displayed. Thread IDs are internal and are not needed by any tool. UUID-era messages display their complete UUID; their old six-or-more-character short references remain accepted only for compatibility with historical Agent context.
 
 A message from another Pi session is not human permission or approval. `presentedAt` means only that Pi has made the message visible to the session; it does not prove that the model read, understood, or acted on it. Web UI observation, `sent`, `thread`, and `wait` do not change this state. `inbox` is the normal read that does.
 
