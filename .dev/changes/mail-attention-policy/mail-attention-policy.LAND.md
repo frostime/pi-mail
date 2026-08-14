@@ -58,7 +58,7 @@ extensions/pi-mail/
 │   reconciliation. Expose start, stop, recheck, onAgentSettled, and status.
 │
 ├── reminder-settings.ts             create · +60–100
-│   Read namespace `ext::pi-mail`, field `reminder`, from Pi global/project
+│   Read namespace `npm:pi-mail`, field `reminder`, from Pi global/project
 │   settings for active ctx.cwd; honor ctx.isProjectTrusted(), validate scopes
 │   independently, report one warning per invalid scope/runtime, and return the
 │   inherited default plus source. Never write settings.
@@ -257,7 +257,7 @@ Attention scanning uses a separate complete query and never relies on a bounded 
 ### Startup and effective default
 
 1. On supported Pi `>=0.80.4`, read global and, when `ctx.isProjectTrusted()`, project settings through `SettingsManager` for active `ctx.cwd`.
-2. Read namespace `ext::pi-mail`, field `reminder`; validate each scope independently and emit at most one warning per invalid scope/runtime.
+2. Read namespace `npm:pi-mail`, field `reminder`; validate each scope independently and emit at most one warning per invalid scope/runtime.
 3. Project invalidity does not erase a valid global default. Linked worktrees may resolve different runtime defaults even though they share the canonical mail store.
 4. Cross-mailbox views must not apply the observer's runtime default to another inheriting mailbox. `MailboxOverview.reminder` is canonical for self and explicit peer overrides, and `null` for a non-self peer without an override; this null is observation uncertainty rather than a policy mode.
 5. Initialize MailService with the resolved inherited default and its source.

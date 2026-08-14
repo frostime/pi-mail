@@ -2,7 +2,7 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 
 import { parseReminderPolicy, type ReminderPolicy } from "./attention-policy.ts";
 
-export const PI_MAIL_SETTINGS_NAMESPACE = "ext::pi-mail";
+export const PI_MAIL_SETTINGS_NAMESPACE = "npm:pi-mail";
 export const PI_MAIL_REMINDER_SETTING = "reminder";
 
 export type ReminderDefaultSource = "project" | "global" | "built-in";

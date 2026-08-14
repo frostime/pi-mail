@@ -76,7 +76,7 @@ The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count th
 
 ### Reminder configuration
 
-The effective reminder source is resolved in this order: mailbox override, trusted project `ext::pi-mail.reminder`, global `ext::pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active `ctx.cwd` through Pi's SettingsManager and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
+The effective reminder source is resolved in this order: mailbox override, trusted project `npm:pi-mail.reminder`, global `npm:pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active `ctx.cwd` through Pi's SettingsManager and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
 
 Linked worktrees share peer records but may resolve different trusted project defaults. Therefore cross-mailbox observation never applies the current runtime's default to another inheriting mailbox: the current mailbox and explicit peer overrides expose canonical reminder status, while a non-self mailbox with no override exposes `reminder: null`. This means the observer cannot know that session's runtime-local effective policy; it is not an additional policy mode.
 

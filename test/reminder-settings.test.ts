@@ -12,8 +12,8 @@ async function settingsFixture(globalValue: unknown, projectValue: unknown) {
   const agentDir = path.join(root, "agent");
   await mkdir(path.join(cwd, ".pi"), { recursive: true });
   await mkdir(agentDir, { recursive: true });
-  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ "ext::pi-mail": { reminder: globalValue } }));
-  await writeFile(path.join(cwd, ".pi", "settings.json"), JSON.stringify({ "ext::pi-mail": { reminder: projectValue } }));
+  await writeFile(path.join(agentDir, "settings.json"), JSON.stringify({ "npm:pi-mail": { reminder: globalValue } }));
+  await writeFile(path.join(cwd, ".pi", "settings.json"), JSON.stringify({ "npm:pi-mail": { reminder: projectValue } }));
   return { cwd, agentDir };
 }
 

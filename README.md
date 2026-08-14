@@ -184,7 +184,7 @@ The mailbox override takes precedence over the trusted project default, then the
 
 ```json
 {
-  "ext::pi-mail": {
+  "npm:pi-mail": {
     "reminder": "after-turn"
   }
 }

@@ -106,8 +106,8 @@ When the effective reminder is `off`:
 The effective reminder is resolved in this order:
 
 1. mailbox override;
-2. trusted project `ext::pi-mail.reminder` default;
-3. global `ext::pi-mail.reminder` default;
+2. trusted project `npm:pi-mail.reminder` default;
+3. global `npm:pi-mail.reminder` default;
 4. built-in `off`.
 
 The settings value is a default only. It is not copied into an unconfigured mailbox record. A later settings change therefore affects an inheriting mailbox on the next Pi startup or reload.
@@ -118,7 +118,7 @@ A mailbox must distinguish these states:
 - explicit `off`: ignore the default and stay off;
 - explicit `after-turn` or minute policy: ignore the default and use the override.
 
-Settings use namespace `ext::pi-mail` and field `reminder`. Global settings are read from Pi's agent settings. Project settings are resolved by Pi's `SettingsManager` from the active `ctx.cwd`, not from Pi Mail's canonical shared Git mail root, and are honored only when `ctx.isProjectTrusted()` is true. This intentionally allows linked worktrees that share a mailbox store to supply different runtime defaults; a persisted mailbox override remains shared and wins in every worktree.
+Settings use namespace `npm:pi-mail` and field `reminder`. Global settings are read from Pi's agent settings. Project settings are resolved by Pi's `SettingsManager` from the active `ctx.cwd`, not from Pi Mail's canonical shared Git mail root, and are honored only when `ctx.isProjectTrusted()` is true. This intentionally allows linked worktrees that share a mailbox store to supply different runtime defaults; a persisted mailbox override remains shared and wins in every worktree.
 
 An invalid project value is ignored and resolution continues to the valid global value or built-in default. An invalid global value is ignored. Each invalid scope produces at most one `console.warn` per loaded runtime and, when `ctx.hasUI`, one TUI warning during startup; poll checks never repeat the warning. Pi Mail never writes either settings file.
 
@@ -126,7 +126,7 @@ Examples:
 
 ```json
 {
-  "ext::pi-mail": {
+  "npm:pi-mail": {
     "reminder": 30
   }
 }
@@ -134,7 +134,7 @@ Examples:
 
 ```json
 {
-  "ext::pi-mail": {
+  "npm:pi-mail": {
     "reminder": "after-turn"
   }
 }
@@ -142,7 +142,7 @@ Examples:
 
 ```json
 {
-  "ext::pi-mail": {
+  "npm:pi-mail": {
     "reminder": "off"
   }
 }
@@ -161,18 +161,18 @@ The command surface becomes:
 ```
 
 - No argument is read-only: it prints one user-facing status plus concise help text. It does not modify configuration, re-evaluate pending mail, or emit the one-time settings hint.
-- The status identifies the effective policy and source; the help lists `off`, `after-turn`, `<1-1440>`, and `default`, and briefly identifies `ext::pi-mail.reminder` as the settings default.
+- The status identifies the effective policy and source; the help lists `off`, `after-turn`, `<1-1440>`, and `default`, and briefly identifies `npm:pi-mail.reminder` as the settings default.
 - `off`, `after-turn`, and a minute value persist a mailbox override.
 - `default` removes the mailbox override and restores inheritance.
 - A successful change causes the Attention runtime to re-evaluate pending mail. When Pi is busy, the runtime waits for `agent_settled` and re-reads the then-current effective policy rather than pre-queuing a follow-up; therefore a later `off` or `default` command can cancel a not-yet-emitted nudge.
-- When the command changes a reminder for the first time in a loaded session and neither settings scope defines a valid default, the TUI shows one additional hint explaining `ext::pi-mail.reminder`. This hint is informational and is not persisted as mailbox protocol data.
+- When the command changes a reminder for the first time in a loaded session and neither settings scope defines a valid default, the TUI shows one additional hint explaining `npm:pi-mail.reminder`. This hint is informational and is not persisted as mailbox protocol data.
 
 Example no-argument output:
 
 ```text
 Pi Mail reminder: 30 minutes (project default).
 Usage: /mail-reminder off|after-turn|<1-1440>|default
-Default for unconfigured mailboxes: ext::pi-mail.reminder in Pi settings.
+Default for unconfigured mailboxes: npm:pi-mail.reminder in Pi settings.
 ```
 
 The first line may instead report `off (mailbox override)` or `after current turn (global default)` as applicable.

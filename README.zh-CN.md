@@ -184,7 +184,7 @@ sequenceDiagram
 
 ```json
 {
-  "ext::pi-mail": {
+  "npm:pi-mail": {
     "reminder": "after-turn"
   }
 }
