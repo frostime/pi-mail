@@ -1,10 +1,6 @@
 # Changelog
 
-## 0.6.3 - 2026-08-13
-
-New messages now use complete seven-character lowercase base-36 IDs with atomic collision retries. Agent-facing mail views expose only the actionable message ID, omit internal thread IDs, and no longer repeat session IDs in routine mail output. Existing UUID messages remain readable through their legacy short references, but display their complete UUID.
-
-## Unreleased
+## 0.7.0 - 2026-08-14
 
 Replaced the independent count and stale-mail wakeups with one recipient-owned Attention policy. Quiet direct mail now supports `off`, `after-turn`, or a 1-1440 minute policy, resolved from a mailbox override, trusted project default, global default, then built-in `off`. `/mail-reminder default` restores inheritance, and the no-argument command reports the effective value and source without changing state.
 
@@ -16,6 +12,12 @@ Peer records now write version 2 and centralize v1 compatibility decoding. Legac
 
 Downgrading to an older Pi Mail may collapse version 2 inheritance or minute/after-turn overrides to the older absent/off representation when it rewrites a peer; canonical messages and delivery records remain readable.
 
+## Unreleased
+
+
+## 0.6.3 - 2026-08-13
+
+New messages now use complete seven-character lowercase base-36 IDs with atomic collision retries. Agent-facing mail views expose only the actionable message ID, omit internal thread IDs, and no longer repeat session IDs in routine mail output. Existing UUID messages remain readable through their legacy short references, but display their complete UUID.
 
 ## 0.6.2
 
