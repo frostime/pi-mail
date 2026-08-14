@@ -160,6 +160,47 @@ function formatReminder(status: ReminderStatus): string {
   return `${value} (${status.source})`;
 }
 
+/** Friendly reminder wording shared by user-facing commands. */
+export function formatUserReminder(status: ReminderStatus): string {
+  const value = status.mode === "off"
+    ? "off"
+    : status.mode === "after-turn"
+      ? "after current turn"
+      : `${status.minutes} minute${status.minutes === 1 ? "" : "s"}`;
+  const source = status.source === "mailbox"
+    ? "mailbox override"
+    : status.source === "built-in"
+      ? "built-in default"
+      : `${status.source} default`;
+  return `${value} (${source})`;
+}
+
+function formatWaitingAge(deliveredAt: string, nowMs: number): string {
+  const parsed = Date.parse(deliveredAt);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const minutes = Math.max(0, Math.floor((nowMs - parsed) / 60_000));
+  if (minutes === 0) return "under a minute";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+}
+
+/** User-facing mailbox status; read-only, never touches delivery or presentation state. */
+export function formatUserStatus(status: MailStatus, oldestToAt: string | null, nowMs = Date.now()): string {
+  const name = status.sessionName && status.sessionName !== status.alias
+    ? ` · ${status.sessionName}`
+    : "";
+  const age = oldestToAt ? ` · oldest direct mail waiting ${formatWaitingAge(oldestToAt, nowMs)}` : "";
+  return [
+    `Pi Mail mailbox: ${status.alias} (${status.shortId})${name}`,
+    `Discoverable: ${status.discoverable ? "yes" : "no"} · Active peers: ${status.activePeerCount}`,
+    `Inbox: ${status.unpresented.to} To, ${status.unpresented.cc} Cc pending${age}`,
+    `Reminder: ${formatUserReminder(status.reminder)}.`,
+  ].join("\n");
+}
+
 export function formatToolContent(action: MailAction, value: unknown): string {
   switch (action) {
     case "status": {

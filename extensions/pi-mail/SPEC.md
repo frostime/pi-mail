@@ -106,6 +106,10 @@ A wait is always finite and abortable. The adapter default is 60 seconds and the
 
 `/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, Pi session shutdown, or the page's close action stops that server. Mail delivery continues while the Web UI is not running.
 
+`/mail-status` is a read-only user-facing command. It prints the current mailbox alias, session name, discoverability, active peer count, unpresented `To`/`Cc` counts, the oldest waiting direct delivery age, and the effective reminder. It never changes delivery or presentation state.
+
+`/mail-rename <name>` sets the current mailbox alias through the same validation as the configure tool: 1–64 characters, no slashes or control characters. Running it without an argument reports the current alias and usage. Aliases need not be unique; the command warns when another mailbox already uses the chosen name because addressing may then require the session ID.
+
 The user view may list the current session and sessions hidden from peer discovery because `discoverable` controls peer discovery, not local-user visibility. The compose view may select one, several, or all currently active sessions. “All active” expands to an explicit `To` list and does not introduce broadcast or group semantics into the mail protocol.
 
 Session and message lists must remain scrollable rather than allowing project history to grow the page without bound. Session cards must expose pending `To`/`Cc` counts and enough age information for the user to notice stalled mailboxes without opening every session. The user view must not mark those messages presented.

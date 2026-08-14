@@ -10,6 +10,8 @@ import { loadReminderSettings, PI_MAIL_SETTINGS_NAMESPACE, PI_MAIL_REMINDER_SETT
 import {
   collapsedResultLabel,
   formatToolContent,
+  formatUserReminder,
+  formatUserStatus,
   toolCallLabel,
   type MailAction,
   type MailToolArgs,
@@ -35,23 +37,9 @@ function toolResult(action: MailAction, value: unknown) {
   };
 }
 
-function reminderDescription(status: ReminderStatus): string {
-  const value = status.mode === "off"
-    ? "off"
-    : status.mode === "after-turn"
-      ? "after current turn"
-      : `${status.minutes} minute${status.minutes === 1 ? "" : "s"}`;
-  const source = status.source === "mailbox"
-    ? "mailbox override"
-    : status.source === "built-in"
-      ? "built-in default"
-      : `${status.source} default`;
-  return `${value} (${source})`;
-}
-
 function reminderHelp(status: ReminderStatus): string {
   return [
-    `Pi Mail reminder: ${reminderDescription(status)}.`,
+    `Pi Mail reminder: ${formatUserReminder(status)}.`,
     "Usage: /mail-reminder off|after-turn|<1-1440>|default",
     `Default for unconfigured mailboxes: ${PI_MAIL_SETTINGS_NAMESPACE}.${PI_MAIL_REMINDER_SETTING} in Pi settings.`,
   ].join("\n");
@@ -186,12 +174,66 @@ export default function piMailExtension(pi: ExtensionAPI): void {
       const changed = !samePolicy(previous, policy);
       const status = await runtime.getReminderStatus();
       if (!isCurrent(generation, mailbox)) return;
-      ctx.ui.notify(`Pi Mail reminder set to ${reminderDescription(status)}.`, "info");
+      ctx.ui.notify(`Pi Mail reminder set to ${formatUserReminder(status)}.`, "info");
       if (changed && !settingsHintShown && mailbox.defaultReminder.source === "built-in") {
         settingsHintShown = true;
         ctx.ui.notify(`Set ${PI_MAIL_SETTINGS_NAMESPACE}.${PI_MAIL_REMINDER_SETTING} in Pi settings to define the default for unconfigured mailboxes.`, "info");
       }
       if (changed) await runtime.checkNow();
+    },
+  });
+
+  pi.registerCommand("mail-status", {
+    description: "Show the current Pi Mail mailbox and inbox status",
+    handler: async (_args, ctx) => {
+      const mailbox = service;
+      if (!mailbox) {
+        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
+        return;
+      }
+
+      const generation = lifecycleGeneration;
+      const status = await mailbox.status();
+      const oldestToAt = await mailbox.oldestPendingToAt();
+      if (!isCurrent(generation, mailbox)) return;
+      ctx.ui.notify(formatUserStatus(status, oldestToAt), "info");
+    },
+  });
+
+  pi.registerCommand("mail-rename", {
+    description: "Rename the current mailbox: /mail-rename <name>",
+    handler: async (args, ctx) => {
+      const mailbox = service;
+      if (!mailbox) {
+        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
+        return;
+      }
+
+      const generation = lifecycleGeneration;
+      const value = args.trim();
+      if (!value) {
+        const status = await mailbox.status();
+        if (!isCurrent(generation, mailbox)) return;
+        ctx.ui.notify(
+          `Pi Mail mailbox is currently "${status.alias}". Usage: /mail-rename <name> (1-64 characters, no slashes).`,
+          "info",
+        );
+        return;
+      }
+
+      const peer = await mailbox.configure({ alias: value }).catch((error) => {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        return null;
+      });
+      if (!peer || !isCurrent(generation, mailbox)) return;
+
+      const peers = await mailbox.discover({ includeInactive: true });
+      if (!isCurrent(generation, mailbox)) return;
+      const clashes = peers.filter((other) => other.alias.toLowerCase() === peer.alias.toLowerCase());
+      const note = clashes.length
+        ? ` Alias is also used by ${clashes.map((other) => `${other.alias} (${other.shortId})`).join(", ")}; addressing may require the session ID.`
+        : "";
+      ctx.ui.notify(`Pi Mail mailbox renamed to "${peer.alias}".${note}`, "info");
     },
   });
 

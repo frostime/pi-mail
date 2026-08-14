@@ -77,6 +77,8 @@ Pi Mail 同时只提供少量用户侧能力：
 
 - `/mail-ui` 打开当前项目的本地邮箱和写信界面；
 - `/mail-reminder` 设置静默邮件长时间未处理时的可选提醒；
+- `/mail-status` 显示当前 mailbox 与 inbox 状态；
+- `/mail-rename` 设置 mailbox 名称。
 - Pi 底部状态栏显示当前 session 的待处理邮件数量。
 
 运行时不依赖第三方 NPM 包，邮件只使用 Node 文件系统能力保存在本地。
@@ -191,6 +193,20 @@ sequenceDiagram
 ```
 
 配置值可以是 `"off"`、`"after-turn"`，或 1 到 1440 的整数。将同一对象写入 Pi 全局 settings 可设置全局默认值；写入当前项目的 `.pi/settings.json` 可设置受信任项目默认值。
+
+### Mailbox 状态与命名
+
+```text
+/mail-status
+```
+
+打印当前 mailbox 名称、session 名称、是否可被发现、活跃 peer 数量、待处理 inbox 计数、等待最久的直接邮件以及当前生效的提醒策略。该命令只读，不会改变投递或呈现状态。
+
+```text
+/mail-rename <name>
+```
+
+设置其他 session 用于寻址本 mailbox 的名称（alias）。名称长度为 1 到 64 个字符，不能包含斜杠或控制字符。不带参数运行时会打印当前名称和用法。允许重名，但如果所选名称与其他 mailbox 相同，Pi Mail 会发出警告，因为此时寻址可能需要使用 session ID。
 
 ## 范围与边界
 

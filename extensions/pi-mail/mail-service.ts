@@ -631,6 +631,13 @@ export class MailService {
     };
   }
 
+  /** Oldest unpresented direct-To delivery time for the current mailbox, or null. */
+  async oldestPendingToAt(): Promise<string | null> {
+    const deliveries = await this.store.listDeliveries(this.sessionId);
+    const pendingTo = deliveries.filter((delivery) => !delivery.presentedAt && delivery.kind === "to");
+    return pendingTo.map((delivery) => delivery.deliveredAt).filter(Boolean).sort()[0] ?? null;
+  }
+
   private async sendFrom(input: SendMailInput & {
     senderKind: SenderKind;
     senderId: string;

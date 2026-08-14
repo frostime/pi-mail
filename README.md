@@ -77,6 +77,8 @@ Pi Mail also adds a small user-facing surface:
 
 - `/mail-ui` opens a local project mailbox and message composer;
 - `/mail-reminder` controls optional reminders for quiet mail that has not been handled;
+- `/mail-status` shows the current mailbox and inbox status;
+- `/mail-rename` sets the mailbox name.
 - Pi's footer shows a compact pending-mail count for the current session.
 
 The runtime has no third-party NPM dependencies. Mail is stored locally using Node filesystem primitives.
@@ -191,6 +193,20 @@ The mailbox override takes precedence over the trusted project default, then the
 ```
 
 The value may be `"off"`, `"after-turn"`, or an integer from 1 through 1440. Put the same object in global Pi settings for a global default, or in the active project's `.pi/settings.json` for a trusted project default.
+
+### Mailbox status and name
+
+```text
+/mail-status
+```
+
+prints the current mailbox name, session name, discoverability, active peer count, pending inbox counts, the oldest waiting direct mail, and the effective reminder. It is read-only and never changes delivery or presentation state.
+
+```text
+/mail-rename <name>
+```
+
+sets the mailbox name (alias) that other sessions use to address this mailbox. Names may be 1-64 characters and cannot contain slashes or control characters. Running it without an argument prints the current name and usage. Duplicate names are allowed, but Pi Mail warns when the chosen name is shared with another mailbox because addressing may then require the session ID.
 
 ## Scope and boundaries
 
