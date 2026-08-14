@@ -78,9 +78,13 @@ The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count th
 
 The effective reminder source is resolved in this order: mailbox override, trusted project `ext::pi-mail.reminder`, global `ext::pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active `ctx.cwd` through Pi's SettingsManager and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
 
+Linked worktrees share peer records but may resolve different trusted project defaults. Therefore cross-mailbox observation never applies the current runtime's default to another inheriting mailbox: the current mailbox and explicit peer overrides expose canonical reminder status, while a non-self mailbox with no override exposes `reminder: null`. This means the observer cannot know that session's runtime-local effective policy; it is not an additional policy mode.
+
 `/mail-reminder` is read-only and reports the canonical mode and source plus concise help. `/mail-reminder off|after-turn|<1-1440>` writes a mailbox override; `/mail-reminder default` removes it. Successful changes request one Attention re-evaluation. The first mutation in a loaded session may show one settings hint when neither scope provides a valid default.
 
-Peer records use version 2 with optional `reminder`: absence means inherit, and `"off"`, `"after-turn"`, or an integer from 1 through 1440 are the only valid overrides. The storage boundary is the sole compatibility decoder. Legacy version 1 positive minute values become matching overrides; absent, `null`, or `0` becomes explicit `off` so upgrade cannot silently enable turns. Malformed reminders and unknown versions fail with an identifying error. Current writes never emit `reminderAfterMinutes`.
+Peer records use version 2 with optional `reminder`: absence means inherit, and `"off"`, `"after-turn"`, or an integer from 1 through 1440 are the only valid overrides. The storage boundary is the sole compatibility decoder. Legacy version 1 positive minute values become matching overrides; absent, `null`, or `0` becomes explicit `off` so upgrade cannot silently enable turns. Version 2 records containing the legacy `reminderAfterMinutes` field, malformed reminders, and unknown versions fail with an identifying error. Current writes never emit `reminderAfterMinutes`.
+
+Downgrading is not guaranteed to preserve version 2 reminder state: an older Pi Mail may collapse inheritance or minute/after-turn overrides to its absent/off representation when it rewrites the peer. Canonical messages and delivery records remain readable across that downgrade.
 
 ### Model-facing views
 

@@ -106,7 +106,7 @@ export interface MailboxOverview extends DiscoveredPeer {
     cc: number;
     oldestToAt: string | null;
   };
-  reminder: ReminderStatus;
+  reminder: ReminderStatus | null;
 }
 
 export interface SentRecipient extends PeerAddress {

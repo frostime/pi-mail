@@ -207,7 +207,7 @@ Reminder configuration moves to a new peer-record representation with a centrali
 { "version": 2, "reminder": 30 }
 ```
 
-A v2 record with no `reminder` field inherits its runtime default. A malformed v2 reminder or unknown peer-record version fails peer decoding with a path/peer-specific error; this change does not silently repair corrupted or forward-version data.
+A v2 record with no `reminder` field inherits its runtime default. A v2 record that contains the legacy `reminderAfterMinutes` field, a malformed v2 reminder, or an unknown peer-record version fails peer decoding with a path/peer-specific error; this change does not silently repair corrupted, mixed-version, or forward-version data.
 
 Legacy v1 decoding is deterministic:
 
@@ -267,7 +267,7 @@ Attention evaluation must inspect the complete unpresented mailbox rather than a
 
 ### Observability
 
-An effective reminder status has one canonical public projection: `{ mode: "off" | "after-turn" | "after-minutes", minutes?: number, source: "mailbox" | "project" | "global" | "built-in" }`; `minutes` is present only for `after-minutes`. Mail tool details, mailbox overviews, the Web API, TUI text, and Web UI consume this projection. A presentation-boundary decoder may translate restored legacy tool-result details containing `reminderAfterMinutes`; no other downstream module reads that legacy field.
+An effective reminder status has one canonical public projection: `{ mode: "off" | "after-turn" | "after-minutes", minutes?: number, source: "mailbox" | "project" | "global" | "built-in" }`; `minutes` is present only for `after-minutes`. Current-mailbox tool details, TUI text, the Web API, and Web UI consume this projection. Cross-mailbox observation is intentionally nullable: `MailboxOverview.reminder` is the canonical status for self and for another mailbox with an explicit override, but `null` for a non-self inheriting mailbox because linked worktrees may resolve different trusted project/global defaults and the observer cannot know that runtime-local effective value. `null` is observation uncertainty, not a reminder policy state. A presentation-boundary decoder may translate restored legacy tool-result details containing `reminderAfterMinutes`; no other downstream module reads that legacy field.
 
 Attention decisions carry a reason and relevant message IDs in structured details. Errors continue to use the extension's existing error logging style; invalid settings produce bounded startup warnings rather than repeated poll-loop errors.
 

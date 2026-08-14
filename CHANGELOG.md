@@ -10,7 +10,9 @@ Replaced the independent count and stale-mail wakeups with one recipient-owned A
 
 The previous automatic three-message/count-bucket model turns are removed. With effective `off`, quiet mail cannot start a turn because of age, count, or Agent lifecycle; the footer and Web UI remain passive. Eligible nudges are idle-only `followUp` custom messages with durable per-message cohort receipts, contain no mail bodies, and never advance `presentedAt`. Human-origin and urgent `notify: true` delivery remain independent.
 
-Peer records now write version 2 and centralize v1 compatibility decoding. Legacy positive minutes become explicit minute overrides, while absent, `null`, or zero legacy reminder state becomes explicit `off` to avoid silently enabling turns after upgrade. Bounded inbox reads now present only returned deliveries, and new `deliveredAt` values reflect recipient delivery-record creation time. Pi `>=0.80.4` is required for the settled lifecycle boundary.
+Peer records now write version 2 and centralize v1 compatibility decoding. Legacy positive minutes become explicit minute overrides, while absent, `null`, or zero legacy reminder state becomes explicit `off` to avoid silently enabling turns after upgrade. Version 2 records carrying the legacy field are rejected. Cross-mailbox views report inherited reminder state as unknown instead of borrowing the observer worktree's default. Bounded inbox reads now present only returned deliveries, and new `deliveredAt` values reflect recipient delivery-record creation time. Pi `>=0.80.4` is required for the settled lifecycle boundary.
+
+Downgrading to an older Pi Mail may collapse version 2 inheritance or minute/after-turn overrides to the older absent/off representation when it rewrites a peer; canonical messages and delivery records remain readable.
 
 
 ## 0.6.2

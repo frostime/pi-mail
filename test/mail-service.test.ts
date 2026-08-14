@@ -467,6 +467,41 @@ test("mail views include creation timestamps while keeping previews bounded", as
   assert.doesNotMatch(injectedText, /thread_id=/);
 });
 
+test("status presentation validates canonical and restored legacy reminder details", () => {
+  const base = {
+    id: "session",
+    shortId: "session",
+    alias: "mailbox",
+    sessionName: null,
+    discoverable: true,
+    mailRoot: "/mail",
+    unpresented: { to: 0, cc: 0 },
+    activePeerCount: 0,
+  };
+
+  const valid = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", minutes: 30, source: "project" },
+  });
+  const legacy = formatToolContent("status", { ...base, reminderAfterMinutes: 30 });
+  const missingMinutes = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", source: "project" },
+  });
+  const invalidCanonical = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", minutes: 1441, source: "global" },
+  });
+  const invalidLegacy = formatToolContent("status", { ...base, reminderAfterMinutes: 1441 });
+
+  assert.match(valid, /Reminder: 30m \(project\)/);
+  assert.match(legacy, /Reminder: 30m \(mailbox\)/);
+  for (const text of [missingMinutes, invalidCanonical, invalidLegacy]) {
+    assert.match(text, /Reminder: off \(built-in\)/);
+    assert.doesNotMatch(text, /undefinedm|1441m/);
+  }
+});
+
 test("Pi Mail 0.1 messages without senderKind remain session-origin messages", async () => {
   const { a, b } = await makeServices();
   const createdAt = new Date().toISOString();
@@ -587,6 +622,22 @@ test("malformed and unknown peer versions fail with the peer path", async () => 
   await assert.rejects(() => b.store.getPeer(b.sessionId), (error: Error) => error.message.includes(file) && /unsupported version 99/.test(error.message));
 });
 
+test("v2 peers reject legacy reminder fields even when a canonical override exists", async () => {
+  const { b } = await makeServices();
+  const file = path.join(b.root, "peers", `${b.sessionId}.json`);
+  const current = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  await writeFile(file, JSON.stringify({
+    ...current,
+    version: 2,
+    reminder: "off",
+    reminderAfterMinutes: 30,
+  }));
+  await assert.rejects(
+    () => b.store.getPeer(b.sessionId),
+    (error: Error) => error.message.includes(file) && /must not contain legacy reminderAfterMinutes/.test(error.message),
+  );
+});
+
 test("bounded inbox reads present only returned deliveries", async () => {
   const { a, b } = await makeServices();
   const first = await a.send({ to: ["bob"], body: "first" });
@@ -677,14 +728,16 @@ test("status counts the complete unpresented mailbox beyond display limits", asy
   assert.equal((await b.status()).unpresented.to, 101);
 });
 
-test("project mailbox overview exposes pending state and effective reminder without presenting mail", async () => {
+test("project mailbox overview distinguishes self, explicit override, and unobservable inheritance", async () => {
   const { a, b, c } = await makeServices();
   const direct = await a.send({ to: ["bob"], cc: ["carol"], body: "state" });
   await b.configureReminder({ kind: "after-minutes", minutes: 30 });
 
   const overviews = await a.listProjectMailboxes({ includeInactive: true });
+  const alice = overviews.find((mailbox) => mailbox.id === a.sessionId);
   const bob = overviews.find((mailbox) => mailbox.id === b.sessionId);
   const carol = overviews.find((mailbox) => mailbox.id === c.sessionId);
+  assert.deepEqual(alice?.reminder, { mode: "off", source: "built-in" });
   assert.equal(bob?.pending.to, 1);
   assert.equal(bob?.pending.cc, 0);
   assert.ok(bob?.pending.oldestToAt);
@@ -692,6 +745,6 @@ test("project mailbox overview exposes pending state and effective reminder with
   assert.equal(carol?.pending.to, 0);
   assert.equal(carol?.pending.cc, 1);
   assert.equal(carol?.pending.oldestToAt, null);
-  assert.deepEqual(carol?.reminder, { mode: "off", source: "built-in" });
+  assert.equal(carol?.reminder, null);
   assert.equal((await b.store.getDelivery(b.sessionId, direct.id))?.presentedAt, null);
 });

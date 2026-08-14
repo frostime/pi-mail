@@ -29,6 +29,9 @@ function validateIdentity(record: Record<string, unknown>, source: string): void
 }
 
 function decodeCurrent(record: Record<string, unknown>, source: string): PeerRecordV2 {
+  if (Object.hasOwn(record, "reminderAfterMinutes")) {
+    throw new Error(`Invalid peer record at ${source}: version 2 must not contain legacy reminderAfterMinutes`);
+  }
   if (Object.hasOwn(record, "reminder")) {
     try {
       parseReminderPolicy(record.reminder);
@@ -36,8 +39,7 @@ function decodeCurrent(record: Record<string, unknown>, source: string): PeerRec
       throw new Error(`Invalid peer record at ${source}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const { reminderAfterMinutes: _legacyReminder, ...current } = record;
-  return current as unknown as PeerRecordV2;
+  return record as unknown as PeerRecordV2;
 }
 
 function decodeLegacy(record: Record<string, unknown>, source: string): PeerRecordV2 {

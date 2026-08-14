@@ -1,4 +1,4 @@
-import type { ReminderStatus } from "./attention-policy.ts";
+import { parseReminderPolicy, type ReminderStatus } from "./attention-policy.ts";
 import type { PeerRecordV2 } from "./peer-record.ts";
 import type {
   DiscoveredPeer,
@@ -116,21 +116,43 @@ function formatWait(result: WaitResult): string {
 }
 
 function displayedReminder(value: unknown): ReminderStatus {
-  if (typeof value === "object" && value !== null) {
-    const status = value as Partial<ReminderStatus>;
-    if ((status.mode === "off" || status.mode === "after-turn" || status.mode === "after-minutes")
-      && (status.source === "mailbox" || status.source === "project" || status.source === "global" || status.source === "built-in")) {
-      return status as ReminderStatus;
+  if (typeof value !== "object" || value === null) {
+    return { mode: "off", source: "built-in" };
+  }
+  const status = value as Partial<ReminderStatus>;
+  const source: ReminderStatus["source"] | undefined = status.source === "mailbox"
+    || status.source === "project" || status.source === "global" || status.source === "built-in"
+    ? status.source
+    : undefined;
+  if (!source) return { mode: "off", source: "built-in" };
+
+  if (status.mode === "after-minutes") {
+    try {
+      const policy = parseReminderPolicy(status.minutes);
+      if (policy.kind === "after-minutes") {
+        return { mode: "after-minutes", minutes: policy.minutes, source };
+      }
+    } catch {
+      return { mode: "off", source: "built-in" };
     }
+    return { mode: "off", source: "built-in" };
+  }
+  if ((status.mode === "off" || status.mode === "after-turn") && status.minutes === undefined) {
+    return { mode: status.mode, source };
   }
   return { mode: "off", source: "built-in" };
 }
 
 function statusReminder(value: MailStatus | (Omit<MailStatus, "reminder"> & { reminderAfterMinutes?: number | null })): ReminderStatus {
   if ("reminder" in value) return displayedReminder(value.reminder);
-  return typeof value.reminderAfterMinutes === "number" && value.reminderAfterMinutes > 0
-    ? { mode: "after-minutes", minutes: value.reminderAfterMinutes, source: "mailbox" }
-    : { mode: "off", source: "mailbox" };
+  try {
+    const policy = parseReminderPolicy(value.reminderAfterMinutes ?? "off");
+    return policy.kind === "after-minutes"
+      ? { mode: "after-minutes", minutes: policy.minutes, source: "mailbox" }
+      : { mode: policy.kind, source: "mailbox" };
+  } catch {
+    return { mode: "off", source: "built-in" };
+  }
 }
 
 function formatReminder(status: ReminderStatus): string {

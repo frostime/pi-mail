@@ -226,7 +226,7 @@ Immediately before an idle dispatch, the runtime records cohort IDs as accepted 
 
 ### Peer compatibility
 
-The peer decoder accepts legacy v1 and current v2 records and returns one canonical current shape. Current v2 uses optional field `reminder`: absent means inherit; `"off"`, `"after-turn"`, or integer 1–1440 are the only valid present values. `null`, malformed values, and unknown versions fail with an identifying error.
+The peer decoder accepts legacy v1 and current v2 records and returns one canonical current shape. Current v2 uses optional field `reminder`: absent means inherit; `"off"`, `"after-turn"`, or integer 1–1440 are the only valid present values. `null`, malformed values, a v2 record carrying the legacy `reminderAfterMinutes` field, and unknown versions fail with an identifying error.
 
 The deterministic legacy mapping is:
 
@@ -259,9 +259,10 @@ Attention scanning uses a separate complete query and never relies on a bounded 
 1. On supported Pi `>=0.80.4`, read global and, when `ctx.isProjectTrusted()`, project settings through `SettingsManager` for active `ctx.cwd`.
 2. Read namespace `ext::pi-mail`, field `reminder`; validate each scope independently and emit at most one warning per invalid scope/runtime.
 3. Project invalidity does not erase a valid global default. Linked worktrees may resolve different runtime defaults even though they share the canonical mail store.
-4. Initialize MailService with the resolved inherited default and its source.
-5. Decode/migrate the current peer record and resolve mailbox override precedence.
-6. Construct AttentionRuntime, reconcile all current session entries, then start polling only after MailService initialization succeeds.
+4. Cross-mailbox views must not apply the observer's runtime default to another inheriting mailbox. `MailboxOverview.reminder` is canonical for self and explicit peer overrides, and `null` for a non-self peer without an override; this null is observation uncertainty rather than a policy mode.
+5. Initialize MailService with the resolved inherited default and its source.
+6. Decode/migrate the current peer record and resolve mailbox override precedence.
+7. Construct AttentionRuntime, reconcile all current session entries, then start polling only after MailService initialization succeeds.
 
 ### Quiet nudge decision
 
@@ -306,7 +307,7 @@ Mutating arguments delegate value parsing to the reminder boundary and mailbox p
 - Do not migrate message or delivery files.
 - Decode inactive legacy peers lazily; do not perform a project-wide rewrite.
 - Rewriting the current peer during normal initialization is acceptable because initialization already updates that record.
-- Keep restored old tool-result rendering tolerant of `reminderAfterMinutes` at the presentation boundary.
+- Keep restored old tool-result rendering tolerant of `reminderAfterMinutes` at the presentation boundary; validate canonical and legacy minute values through the same 1–1440 bounds and fall back safely for malformed historical details.
 - Ignore old count/stale custom messages as cohort receipts because they lack complete message IDs.
 - Document that downgrade may collapse any v2 inheritance/minute/after-turn state to old absent/off when an old version rewrites the peer, while canonical mail remains readable.
 
@@ -319,7 +320,7 @@ Tests should protect behavior rather than internal function count or private fie
 Highest-value contracts:
 
 1. `off` never starts a quiet-mail turn regardless of count.
-2. mailbox override and default-source precedence are truthful.
+2. mailbox override and default-source precedence are truthful, while non-self inherited mailbox overviews remain explicitly unobservable (`null`) rather than borrowing the observer's default.
 3. quiet nudge and presentation are independent.
 4. the same cohort is suppressed before and after reload.
 5. new mail can form a later cohort.

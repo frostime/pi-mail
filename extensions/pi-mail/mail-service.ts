@@ -5,6 +5,7 @@ import {
   reminderStatus,
   type EffectiveReminderPolicy,
   type ReminderPolicy,
+  type ReminderStatus,
 } from "./attention-policy.ts";
 import { FsMailStore } from "./fs-store.ts";
 import {
@@ -337,7 +338,7 @@ export class MailService {
           cc: pending.filter((delivery) => delivery.kind === "cc").length,
           oldestToAt,
         },
-        reminder: reminderStatus(this.effectiveReminderForPeer(peers.get(session.id) ?? null)),
+        reminder: this.observedReminderForPeer(session.self === true, peers.get(session.id) ?? null),
       });
     }
 
@@ -881,6 +882,15 @@ export class MailService {
       }
     });
     return result;
+  }
+
+  private observedReminderForPeer(self: boolean, peer: PeerRecordV2 | null): ReminderStatus | null {
+    if (self) return reminderStatus(this.effectiveReminderForPeer(peer));
+    if (!peer || !Object.hasOwn(peer, "reminder")) return null;
+    return reminderStatus({
+      policy: parseReminderPolicy(peer.reminder),
+      source: "mailbox",
+    });
   }
 
   private effectiveReminderForPeer(peer: PeerRecordV2 | null): EffectiveReminderPolicy {

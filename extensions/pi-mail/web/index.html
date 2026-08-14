@@ -199,7 +199,7 @@
           refresh: "Refresh", closeServer: "Close UI server", overview: "Overview", messages: "Recent messages", messagesHint: "latest 100",
           compose: "Compose as user", humanOrigin: "human origin", recipients: "Recipients", recipientHint: "choose To / Cc", subject: "Subject",
           body: "Message", send: "Send", peers: "Sessions", activePeers: "Active peers", unreadTo: "Unpresented To", unreadCc: "Unpresented Cc", reminder: "Quiet reminder", reminderOff: "off",
-          reminderAfterTurn: "after current turn", reminderMinutes: "after {minutes}m", sourceMailbox: "mailbox override", sourceProject: "project default", sourceGlobal: "global default", sourceBuiltIn: "built-in default",
+          reminderAfterTurn: "after current turn", reminderMinutes: "after {minutes}m", reminderInheritedUnknown: "inherited (resolved by that session)", sourceMailbox: "mailbox override", sourceProject: "project default", sourceGlobal: "global default", sourceBuiltIn: "built-in default",
           active: "active", inactive: "historical", noPeers: "No sessions found.", noMessages: "No messages yet.", to: "To", cc: "Cc",
           sendSuccess: "Message delivered.", chooseRecipient: "Choose at least one To recipient.", sendFailed: "Send failed", loadFailed: "Failed to load mail state",
           delivered: "delivered", presented: "presented", pending: "not presented", user: "user", closeConfirm: "Close the Pi Mail Web UI server?",
@@ -212,7 +212,7 @@
           refresh: "刷新", closeServer: "关闭 UI 服务", overview: "概览", messages: "最近邮件", messagesHint: "最近 100 封",
           compose: "以用户身份写信", humanOrigin: "用户来源", recipients: "收件人", recipientHint: "选择 To / Cc", subject: "主题",
           body: "正文", send: "发送", peers: "Sessions", activePeers: "活跃端点", unreadTo: "未呈现 To", unreadCc: "未呈现 Cc", reminder: "静默提醒", reminderOff: "关闭",
-          reminderAfterTurn: "当前轮次结束后", reminderMinutes: "{minutes} 分钟后", sourceMailbox: "邮箱覆盖值", sourceProject: "项目默认值", sourceGlobal: "全局默认值", sourceBuiltIn: "内置默认值",
+          reminderAfterTurn: "当前轮次结束后", reminderMinutes: "{minutes} 分钟后", reminderInheritedUnknown: "继承（由该 session 解析）", sourceMailbox: "邮箱覆盖值", sourceProject: "项目默认值", sourceGlobal: "全局默认值", sourceBuiltIn: "内置默认值",
           active: "活跃", inactive: "历史", noPeers: "当前没有可显示的 session。", noMessages: "还没有邮件。", to: "To", cc: "Cc",
           sendSuccess: "邮件已投递。", chooseRecipient: "至少选择一个 To 收件人。", sendFailed: "发送失败", loadFailed: "加载邮箱状态失败",
           delivered: "已投递", presented: "已呈现", pending: "未呈现", user: "用户", closeConfirm: "确定关闭 Pi Mail Web UI 服务？",
@@ -365,9 +365,7 @@
           if (pendingTo > 0) chips.append(element("span", "chip attention", `${t("waitingTo")}: ${pendingTo}`));
           if (pendingCc > 0) chips.append(element("span", "chip", `${t("waitingCc")}: ${pendingCc}`));
           if (peer.pending?.oldestToAt) chips.append(element("span", "chip", `${t("oldest")}: ${formatAge(peer.pending.oldestToAt)}`));
-          if (peer.reminder) {
-            chips.append(element("span", "chip", reminderText(peer.reminder)));
-          }
+          chips.append(element("span", "chip", peer.reminder ? reminderText(peer.reminder) : t("reminderInheritedUnknown")));
 
           card.append(
             top,
