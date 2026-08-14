@@ -1,8 +1,9 @@
+import type { ReminderStatus } from "./attention-policy.ts";
+import type { PeerRecordV2 } from "./peer-record.ts";
 import type {
   DiscoveredPeer,
   MailMessage,
   MailStatus,
-  PeerRecord,
   SentMessageSummary,
   SentRecipient,
   WaitResult,
@@ -114,12 +115,35 @@ function formatWait(result: WaitResult): string {
   ].join("\n\n");
 }
 
+function displayedReminder(value: unknown): ReminderStatus {
+  if (typeof value === "object" && value !== null) {
+    const status = value as Partial<ReminderStatus>;
+    if ((status.mode === "off" || status.mode === "after-turn" || status.mode === "after-minutes")
+      && (status.source === "mailbox" || status.source === "project" || status.source === "global" || status.source === "built-in")) {
+      return status as ReminderStatus;
+    }
+  }
+  return { mode: "off", source: "built-in" };
+}
+
+function statusReminder(value: MailStatus | (Omit<MailStatus, "reminder"> & { reminderAfterMinutes?: number | null })): ReminderStatus {
+  if ("reminder" in value) return displayedReminder(value.reminder);
+  return typeof value.reminderAfterMinutes === "number" && value.reminderAfterMinutes > 0
+    ? { mode: "after-minutes", minutes: value.reminderAfterMinutes, source: "mailbox" }
+    : { mode: "off", source: "mailbox" };
+}
+
+function formatReminder(status: ReminderStatus): string {
+  const value = status.mode === "after-minutes" ? `${status.minutes}m` : status.mode;
+  return `${value} (${status.source})`;
+}
+
 export function formatToolContent(action: MailAction, value: unknown): string {
   switch (action) {
     case "status": {
       const status = value as MailStatus;
       const name = status.sessionName && status.sessionName !== status.alias ? ` · ${status.sessionName}` : "";
-      const reminder = status.reminderAfterMinutes == null ? "off" : `${status.reminderAfterMinutes}m`;
+      const reminder = formatReminder(statusReminder(status));
       return [
         `Mailbox ${status.alias} (${status.shortId})${name}; discoverable=${status.discoverable ? "yes" : "no"}.`,
         `Active peers: ${status.activePeerCount}. Pending: ${status.unpresented.to} To, ${status.unpresented.cc} Cc. Reminder: ${reminder}.`,
@@ -186,7 +210,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
       return formatWait(value as WaitResult);
 
     case "configure": {
-      const peer = value as PeerRecord;
+      const peer = value as PeerRecordV2;
       return `Mailbox identity updated: ${peer.alias}; discoverable=${peer.discoverable ? "yes" : "no"}.`;
     }
   }
@@ -251,7 +275,7 @@ export function collapsedResultLabel(action: MailAction, value: unknown): string
       return `wait · ${result.messages.length} ${result.reason}`;
     }
     case "configure": {
-      const peer = value as PeerRecord;
+      const peer = value as PeerRecordV2;
       return peer.alias;
     }
   }

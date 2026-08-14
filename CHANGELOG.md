@@ -6,6 +6,12 @@ New messages now use complete seven-character lowercase base-36 IDs with atomic 
 
 ## Unreleased
 
+Replaced the independent count and stale-mail wakeups with one recipient-owned Attention policy. Quiet direct mail now supports `off`, `after-turn`, or a 1-1440 minute policy, resolved from a mailbox override, trusted project default, global default, then built-in `off`. `/mail-reminder default` restores inheritance, and the no-argument command reports the effective value and source without changing state.
+
+The previous automatic three-message/count-bucket model turns are removed. With effective `off`, quiet mail cannot start a turn because of age, count, or Agent lifecycle; the footer and Web UI remain passive. Eligible nudges are idle-only `followUp` custom messages with durable per-message cohort receipts, contain no mail bodies, and never advance `presentedAt`. Human-origin and urgent `notify: true` delivery remain independent.
+
+Peer records now write version 2 and centralize v1 compatibility decoding. Legacy positive minutes become explicit minute overrides, while absent, `null`, or zero legacy reminder state becomes explicit `off` to avoid silently enabling turns after upgrade. Bounded inbox reads now present only returned deliveries, and new `deliveredAt` values reflect recipient delivery-record creation time. Pi `>=0.80.4` is required for the settled lifecycle boundary.
+
 
 ## 0.6.2
 

@@ -64,13 +64,23 @@ Human-origin Web UI mail uses sender kind `human`, the `human-local` principal, 
 
 Ordinary peer mail must not inject its body into the recipient Pi context merely because it arrived. When an unpresented direct `To` delivery has `notify: true`, the recipient Pi process inserts a `pi-mail` custom message whose content identifies it as peer-session mail, then sends it with `deliverAs: "steer"` and `triggerTurn: true`. It must never be injected as a user message. `Cc` deliveries remain silent even when the message carries `notify: true`.
 
-The adapter records the message as presented only after the custom message is durably present in session history. If Pi exits before that history entry exists, the delivery remains unpresented and may be retried on resume.
+The adapter records urgent peer mail as presented only after the matching custom message is durable in session history. If Pi exits before that history entry exists, the delivery remains unpresented and may be retried on resume. Human-origin mail uses the user-message authority channel and is presented first when one scan contains several attention lanes.
 
-Silent direct `To` mail is summarized after backlog accumulation. The current adapter threshold is three pending direct messages, and notices occur when the pending count enters a new threshold bucket rather than once per poll. `Cc` mail is excluded from this count. A backlog notice reports only the pending count and does not mark messages as presented.
+Quiet direct `To` mail is governed by one recipient-owned reminder policy: `off`, `after-turn`, or `after-minutes` from 1 through 1440. Count alone never starts a model turn; the former three-message threshold and bucket notices are removed. `off` is a clean guarantee that quiet mail cannot start a turn because of age, count, or Agent lifecycle. It does not disable urgent peer or human-origin delivery.
 
-A stale-mail reminder is an optional Pi-adapter attention policy owned by the human user, not a message field and not an orchestration primitive. It is disabled by default and configured per mailbox with `/mail-reminder off|<minutes>`. When enabled, quiet unpresented direct `To` mail may trigger one count-only follow-up after the configured age. It must not trigger for `Cc`, `notify: true`, human-origin, or already-presented mail. Within one continuous backlog episode, repeated stale reminders are suppressed; clearing the direct pending backlog rearms the policy. Web UI observation must not mutate `presentedAt` or suppress the recipient-side stale policy.
+An eligible quiet nudge is emitted only while Pi is idle, with `deliverAs: "followUp"` and `triggerTurn: true`. While Pi is busy, the runtime records only an `agent_settled` recheck and does not pre-queue a Pi message, so changing the effective policy to `off` before settlement cancels the nudge. A nudge contains the total quiet-direct pending count and inbox guidance but no mail body. It does not advance `presentedAt`.
 
-The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count through an informational footer status such as `mail 2`. This status must not change delivery or presentation state.
+Each `pi-mail-nudge` stores `{ messageIds, pendingCount, reason }` details. `messageIds` is the oldest-first, previously unnudged cohort from one complete mailbox snapshot; `pendingCount` includes older already nudged quiet mail that remains unpresented. Accepted IDs suppress duplicate calls until matching entries become durable, and all current session entries reconstruct durable receipts on reload. New quiet mail may form a later cohort. Exactly-once behavior across concurrently active runtimes sharing one mailbox is not guaranteed.
+
+The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count through an informational footer status such as `mail 2`. The footer and Web UI are passive indicators and must not change delivery or presentation state.
+
+### Reminder configuration
+
+The effective reminder source is resolved in this order: mailbox override, trusted project `ext::pi-mail.reminder`, global `ext::pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active `ctx.cwd` through Pi's SettingsManager and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
+
+`/mail-reminder` is read-only and reports the canonical mode and source plus concise help. `/mail-reminder off|after-turn|<1-1440>` writes a mailbox override; `/mail-reminder default` removes it. Successful changes request one Attention re-evaluation. The first mutation in a loaded session may show one settings hint when neither scope provides a valid default.
+
+Peer records use version 2 with optional `reminder`: absence means inherit, and `"off"`, `"after-turn"`, or an integer from 1 through 1440 are the only valid overrides. The storage boundary is the sole compatibility decoder. Legacy version 1 positive minute values become matching overrides; absent, `null`, or `0` becomes explicit `off` so upgrade cannot silently enable turns. Malformed reminders and unknown versions fail with an identifying error. Current writes never emit `reminderAfterMinutes`.
 
 ### Model-facing views
 
@@ -104,4 +114,4 @@ The page must remain usable in Chinese and English and support automatic, light,
 
 Changes that make existing `.pi/mails` data unreadable require an explicit compatibility or migration strategy. Existing records without `senderKind` remain session-origin messages; existing records without `notify` mean `false`. Pi Mail 0.4 tombstoned peer records remain readable and filtered from listings.
 
-Changes to project scoping, generated-alias migration, address resolution, human/peer authority mapping, `To`/`Cc` semantics, offline delivery, notification defaults, stale reminder policy, mailbox deletion, fork behavior, or delivery timestamp meaning are protocol or product changes. Document them here and in the changelog, and add compatibility coverage before implementation.
+Changes to project scoping, generated-alias migration, address resolution, human/peer authority mapping, `To`/`Cc` semantics, offline delivery, notification defaults, reminder policy or precedence, mailbox deletion, fork behavior, or delivery timestamp meaning are protocol or product changes. Document them here and in the changelog, and add compatibility coverage before implementation.

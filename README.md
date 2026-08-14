@@ -118,9 +118,9 @@ Normal mail is delivered quietly. The recipient can continue its current work an
 
 Messages remain available when the receiving session is temporarily offline, provided its mailbox still exists. This allows one Agent to leave findings or requests for another session to handle after it resumes.
 
-![Pi Mail backlog notice and inbox](./assets/notice.jpg)
+![Pi Mail pending inbox](./assets/notice.jpg)
 
-*Quiet direct messages appear as pending mail; the Agent uses its inbox to inspect them.*
+*Quiet direct messages remain pending until the Agent inspects the inbox.*
 
 ### Waiting for a response
 
@@ -168,14 +168,29 @@ Close the UI with:
 
 ### Mail reminders
 
-Pi's footer shows a compact `mail N` status when the current session has pending mail. Users can also enable a reminder when quiet direct mail has remained unhandled for a chosen number of minutes:
+Pi's footer shows a passive `mail N` status when the current session has pending mail. Count alone never starts a model turn. Quiet direct mail can optionally produce one count-only nudge under the recipient mailbox's reminder policy:
 
 ```text
-/mail-reminder 30
+/mail-reminder
 /mail-reminder off
+/mail-reminder after-turn
+/mail-reminder 30
+/mail-reminder default
 ```
 
-Reminders are disabled by default.
+`off` cleanly disables automatic turns for quiet mail, including age, count, and Agent lifecycle triggers. `after-turn` nudges after the current Agent run settles, or immediately when Pi is already idle. A value from 1 through 1440 nudges when the oldest eligible quiet delivery reaches that age. Nudges do not include mail bodies or mark messages presented, and each covered message is nudged at most once per Pi session history.
+
+The mailbox override takes precedence over the trusted project default, then the global default, then the built-in `off`. `default` removes the mailbox override and restores inheritance. Project settings are read from the active worktree only when Pi trusts that project:
+
+```json
+{
+  "ext::pi-mail": {
+    "reminder": "after-turn"
+  }
+}
+```
+
+The value may be `"off"`, `"after-turn"`, or an integer from 1 through 1440. Put the same object in global Pi settings for a global default, or in the active project's `.pi/settings.json` for a trusted project default.
 
 ## Scope and boundaries
 

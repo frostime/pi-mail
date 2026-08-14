@@ -28,6 +28,8 @@ export interface AttentionEvaluationInput {
 }
 
 export const PI_MAIL_NUDGE_CUSTOM_TYPE = "pi-mail-nudge";
+export const MIN_REMINDER_MINUTES = 1;
+export const MAX_REMINDER_MINUTES = 24 * 60;
 
 export interface QuietNudgePlan {
   messageIds: string[];
@@ -44,50 +46,77 @@ export interface AttentionPlan {
   recheckWhenSettled: boolean;
 }
 
-/** Decode one settings/command/storage scalar into the internal policy type. */
-export function parseReminderPolicy(_value: unknown): ReminderPolicy {
-  throw new Error("mail-attention-policy reminder parsing is not implemented");
+export function parseReminderPolicy(value: unknown): ReminderPolicy {
+  if (value === "off") return { kind: "off" };
+  if (value === "after-turn") return { kind: "after-turn" };
+  if (typeof value === "number" && Number.isInteger(value)
+    && value >= MIN_REMINDER_MINUTES && value <= MAX_REMINDER_MINUTES) {
+    return { kind: "after-minutes", minutes: value };
+  }
+  throw new Error(`Reminder must be off, after-turn, or an integer from ${MIN_REMINDER_MINUTES} through ${MAX_REMINDER_MINUTES}`);
 }
 
-/**
- * mail-attention-policy::shape — the complete pure decision boundary. Runtime
- * lifecycle and Pi dispatch must not leak into this function.
- */
-export function evaluateAttention(_input: AttentionEvaluationInput): AttentionPlan {
-  throw new Error("mail-attention-policy evaluation is not implemented");
+export function reminderStatus(effective: EffectiveReminderPolicy): ReminderStatus {
+  return effective.policy.kind === "after-minutes"
+    ? { mode: "after-minutes", minutes: effective.policy.minutes, source: effective.source }
+    : { mode: effective.policy.kind, source: effective.source };
 }
 
-export const MAILBOX_NOTICE_THRESHOLD = 3;
-export const MIN_REMINDER_MINUTES = 1;
-export const MAX_REMINDER_MINUTES = 24 * 60;
+function deliveryTime(mail: MailMessage): number {
+  const timestamp = Date.parse(mail.delivery?.deliveredAt ?? mail.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
+}
+
+function oldestFirst(messages: MailMessage[]): MailMessage[] {
+  return messages.sort((a, b) => deliveryTime(a) - deliveryTime(b) || a.id.localeCompare(b.id));
+}
+
+export function evaluateAttention(input: AttentionEvaluationInput): AttentionPlan {
+  const unpresented = input.messages.filter((mail) => !mail.delivery?.presentedAt);
+  const humanMail = oldestFirst(unpresented.filter((mail) => mail.senderKind === "human"));
+  const urgentPeerMail = oldestFirst(unpresented.filter(shouldInterruptForPeerMail));
+  const quietDirect = oldestFirst(unpresented.filter((mail) =>
+    mail.senderKind === "session"
+    && mail.delivery?.kind === "to"
+    && !mail.notify
+  ));
+  const eligible = quietDirect.filter((mail) =>
+    !input.durablyNudgedIds.has(mail.id) && !input.acceptedSendIds.has(mail.id)
+  );
+
+  const plan: AttentionPlan = {
+    pendingTo: unpresented.filter((mail) => mail.delivery?.kind === "to").length,
+    pendingCc: unpresented.filter((mail) => mail.delivery?.kind === "cc").length,
+    humanMail,
+    urgentPeerMail,
+    recheckWhenSettled: false,
+  };
+  if (eligible.length === 0 || input.effectiveReminder.policy.kind === "off") return plan;
+
+  let reason: QuietNudgePlan["reason"] | undefined;
+  if (input.effectiveReminder.policy.kind === "after-turn") {
+    reason = "after-turn";
+  } else {
+    const oldestDeliveredAt = deliveryTime(eligible[0]);
+    if (Number.isFinite(oldestDeliveredAt)
+      && input.nowMs - oldestDeliveredAt >= input.effectiveReminder.policy.minutes * 60_000) {
+      reason = "age";
+    }
+  }
+  if (!reason) return plan;
+  if (!input.idle) {
+    plan.recheckWhenSettled = true;
+    return plan;
+  }
+
+  plan.quietNudge = {
+    messageIds: eligible.map((mail) => mail.id),
+    pendingCount: quietDirect.length,
+    reason,
+  };
+  return plan;
+}
 
 export function shouldInterruptForPeerMail(mail: MailMessage): boolean {
   return mail.senderKind === "session" && mail.notify && mail.delivery?.kind === "to";
-}
-
-export function mailboxNoticeBucket(pendingCount: number): number {
-  return Math.floor(Math.max(0, pendingCount) / MAILBOX_NOTICE_THRESHOLD);
-}
-
-export function normalizeReminderMinutes(value: number | null | undefined): number | null {
-  if (value == null || value === 0) return null;
-  const minutes = Math.trunc(Number(value));
-  if (!Number.isFinite(minutes) || minutes < MIN_REMINDER_MINUTES || minutes > MAX_REMINDER_MINUTES) {
-    throw new Error(`Reminder minutes must be 0 (off) or ${MIN_REMINDER_MINUTES}-${MAX_REMINDER_MINUTES}`);
-  }
-  return minutes;
-}
-
-export function isOverdueDirectMail(
-  mail: MailMessage,
-  reminderAfterMinutes: number | null,
-  nowMs = Date.now(),
-): boolean {
-  if (reminderAfterMinutes == null) return false;
-  if (mail.senderKind !== "session" || mail.notify || mail.delivery?.kind !== "to") return false;
-  if (mail.delivery?.presentedAt) return false;
-
-  const deliveredAt = Date.parse(mail.delivery?.deliveredAt ?? mail.createdAt);
-  if (!Number.isFinite(deliveredAt)) return false;
-  return nowMs - deliveredAt >= reminderAfterMinutes * 60_000;
 }

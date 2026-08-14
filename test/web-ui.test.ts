@@ -34,16 +34,21 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.match(html, /To: all active/);
     assert.match(html, /Delete mailbox/);
     assert.match(html, /删除邮箱/);
-    assert.match(html, /Stale reminder/);
-    assert.match(html, /滞留提醒/);
+    assert.match(html, /Quiet reminder/);
+    assert.match(html, /静默提醒/);
+    assert.match(html, /project default/);
+    assert.match(html, /项目默认值/);
     assert.match(html, /To waiting/);
 
     const { base, headers } = authorization(ui.url);
     assert.equal((await fetch(`${base}/api/state`)).status, 401);
 
     const state = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as {
-      peers: Array<{ id: string; self?: boolean; sessionName?: string | null; pending?: { to: number; cc: number }; reminderAfterMinutes?: number | null }>;
+      peers: Array<{ id: string; self?: boolean; sessionName?: string | null; pending?: { to: number; cc: number }; reminder?: { mode: string; source: string; minutes?: number } }>;
+      status: { reminder: { mode: string; source: string; minutes?: number } };
     };
+    assert.deepEqual(state.status.reminder, { mode: "off", source: "built-in" });
+    assert.deepEqual(state.peers.find((peer) => peer.id === b.sessionId)?.reminder, { mode: "off", source: "built-in" });
     assert.equal(state.peers.length, 2);
     assert.equal(state.peers.filter((peer) => peer.self).length, 1);
     assert.equal(state.peers.find((peer) => peer.id === b.sessionId)?.sessionName, "Review worktree");
