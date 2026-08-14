@@ -1,8 +1,9 @@
+import { parseReminderPolicy, type ReminderStatus } from "./attention-policy.ts";
+import type { PeerRecordV2 } from "./peer-record.ts";
 import type {
   DiscoveredPeer,
   MailMessage,
   MailStatus,
-  PeerRecord,
   SentMessageSummary,
   SentRecipient,
   WaitResult,
@@ -114,12 +115,98 @@ function formatWait(result: WaitResult): string {
   ].join("\n\n");
 }
 
+function displayedReminder(value: unknown): ReminderStatus {
+  if (typeof value !== "object" || value === null) {
+    return { mode: "off", source: "built-in" };
+  }
+  const status = value as Partial<ReminderStatus>;
+  const source: ReminderStatus["source"] | undefined = status.source === "mailbox"
+    || status.source === "project" || status.source === "global" || status.source === "built-in"
+    ? status.source
+    : undefined;
+  if (!source) return { mode: "off", source: "built-in" };
+
+  if (status.mode === "after-minutes") {
+    try {
+      const policy = parseReminderPolicy(status.minutes);
+      if (policy.kind === "after-minutes") {
+        return { mode: "after-minutes", minutes: policy.minutes, source };
+      }
+    } catch {
+      return { mode: "off", source: "built-in" };
+    }
+    return { mode: "off", source: "built-in" };
+  }
+  if ((status.mode === "off" || status.mode === "after-turn") && status.minutes === undefined) {
+    return { mode: status.mode, source };
+  }
+  return { mode: "off", source: "built-in" };
+}
+
+function statusReminder(value: MailStatus | (Omit<MailStatus, "reminder"> & { reminderAfterMinutes?: number | null })): ReminderStatus {
+  if ("reminder" in value) return displayedReminder(value.reminder);
+  try {
+    const policy = parseReminderPolicy(value.reminderAfterMinutes ?? "off");
+    return policy.kind === "after-minutes"
+      ? { mode: "after-minutes", minutes: policy.minutes, source: "mailbox" }
+      : { mode: policy.kind, source: "mailbox" };
+  } catch {
+    return { mode: "off", source: "built-in" };
+  }
+}
+
+function formatReminder(status: ReminderStatus): string {
+  const value = status.mode === "after-minutes" ? `${status.minutes}m` : status.mode;
+  return `${value} (${status.source})`;
+}
+
+/** Friendly reminder wording shared by user-facing commands. */
+export function formatUserReminder(status: ReminderStatus): string {
+  const value = status.mode === "off"
+    ? "off"
+    : status.mode === "after-turn"
+      ? "after current turn"
+      : `${status.minutes} minute${status.minutes === 1 ? "" : "s"}`;
+  const source = status.source === "mailbox"
+    ? "mailbox override"
+    : status.source === "built-in"
+      ? "built-in default"
+      : `${status.source} default`;
+  return `${value} (${source})`;
+}
+
+function formatWaitingAge(deliveredAt: string, nowMs: number): string {
+  const parsed = Date.parse(deliveredAt);
+  if (!Number.isFinite(parsed)) return "unknown";
+  const minutes = Math.max(0, Math.floor((nowMs - parsed) / 60_000));
+  if (minutes === 0) return "under a minute";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+}
+
+/** User-facing mailbox status; read-only, never touches delivery or presentation state. */
+export function formatUserStatus(status: MailStatus, oldestToAt: string | null, nowMs = Date.now()): string {
+  const name = status.sessionName && status.sessionName !== status.alias
+    ? ` · ${status.sessionName}`
+    : "";
+  const age = oldestToAt ? ` · oldest direct mail waiting ${formatWaitingAge(oldestToAt, nowMs)}` : "";
+  return [
+    `Pi Mail mailbox: ${status.alias} (${status.shortId})${name}`,
+    `Discoverable: ${status.discoverable ? "yes" : "no"} · Active peers: ${status.activePeerCount}`,
+    `Inbox: ${status.unpresented.to} To, ${status.unpresented.cc} Cc pending${age}`,
+    `Reminder: ${formatUserReminder(status.reminder)}.`,
+  ].join("\n");
+}
+
 export function formatToolContent(action: MailAction, value: unknown): string {
   switch (action) {
     case "status": {
       const status = value as MailStatus;
       const name = status.sessionName && status.sessionName !== status.alias ? ` · ${status.sessionName}` : "";
-      const reminder = status.reminderAfterMinutes == null ? "off" : `${status.reminderAfterMinutes}m`;
+      const reminder = formatReminder(statusReminder(status));
       return [
         `Mailbox ${status.alias} (${status.shortId})${name}; discoverable=${status.discoverable ? "yes" : "no"}.`,
         `Active peers: ${status.activePeerCount}. Pending: ${status.unpresented.to} To, ${status.unpresented.cc} Cc. Reminder: ${reminder}.`,
@@ -186,7 +273,7 @@ export function formatToolContent(action: MailAction, value: unknown): string {
       return formatWait(value as WaitResult);
 
     case "configure": {
-      const peer = value as PeerRecord;
+      const peer = value as PeerRecordV2;
       return `Mailbox identity updated: ${peer.alias}; discoverable=${peer.discoverable ? "yes" : "no"}.`;
     }
   }
@@ -251,7 +338,7 @@ export function collapsedResultLabel(action: MailAction, value: unknown): string
       return `wait · ${result.messages.length} ${result.reason}`;
     }
     case "configure": {
-      const peer = value as PeerRecord;
+      const peer = value as PeerRecordV2;
       return peer.alias;
     }
   }

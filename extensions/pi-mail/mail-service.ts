@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 
+import {
+  parseReminderPolicy,
+  reminderStatus,
+  type EffectiveReminderPolicy,
+  type ReminderPolicy,
+  type ReminderStatus,
+} from "./attention-policy.ts";
 import { FsMailStore } from "./fs-store.ts";
-import { normalizeReminderMinutes } from "./attention-policy.ts";
 import {
   generateMessageId,
   isLegacyUuidMessageId,
@@ -11,6 +17,7 @@ import {
   SESSION_ID_FRAGMENT_MIN_LENGTH,
   shortSessionId,
 } from "./identity.ts";
+import type { PeerRecordV2, StoredReminderOverride } from "./peer-record.ts";
 import { resolveMailRoot } from "./project-root.ts";
 import type {
   DeliveryRecord,
@@ -20,7 +27,6 @@ import type {
   MailStatus,
   MessageRecord,
   PeerAddress,
-  PeerRecord,
   ProjectMessageSummary,
   RecipientKind,
   SentMessageSummary,
@@ -45,6 +51,7 @@ export interface MailServiceOptions {
   sessionId: string;
   runtimeId?: string;
   presenceTtlMs?: number;
+  defaultReminder?: EffectiveReminderPolicy;
 }
 
 export interface SendMailInput {
@@ -66,7 +73,7 @@ function defaultAliasNumber(sessionId: string): number {
   return Number.parseInt(compact.slice(-6), 16) % GENERATED_ALIAS_COUNT;
 }
 
-function defaultAlias(sessionId: string, peers: PeerRecord[]): string {
+function defaultAlias(sessionId: string, peers: PeerRecordV2[]): string {
   const used = new Set(peers.map((peer) => peer.alias.toLowerCase()));
   const start = defaultAliasNumber(sessionId);
 
@@ -169,12 +176,15 @@ export class MailService {
   readonly presenceTtlMs: number;
   readonly root: string;
   readonly store: FsMailStore;
+  readonly defaultReminder: EffectiveReminderPolicy;
+  private peerMutationQueue: Promise<void> = Promise.resolve();
 
   constructor({
     cwd,
     sessionId,
     runtimeId = randomUUID(),
     presenceTtlMs = DEFAULT_PRESENCE_TTL_MS,
+    defaultReminder = { policy: { kind: "off" }, source: "built-in" },
   }: MailServiceOptions) {
     if (!sessionId) throw new Error("sessionId is required");
 
@@ -182,11 +192,12 @@ export class MailService {
     this.sessionId = sessionId;
     this.runtimeId = runtimeId;
     this.presenceTtlMs = presenceTtlMs;
+    this.defaultReminder = defaultReminder;
     this.root = resolveMailRoot(cwd);
     this.store = new FsMailStore(this.root);
   }
 
-  async init(options: { alias?: string; discoverable?: boolean; sessionName?: string | null } = {}): Promise<PeerRecord> {
+  async init(options: { alias?: string; discoverable?: boolean; sessionName?: string | null } = {}): Promise<PeerRecordV2> {
     await this.store.init();
 
     const timestamp = nowIso();
@@ -199,14 +210,14 @@ export class MailService {
       ? existing.alias
       : undefined;
     const peers = existingAlias ? [] : await this.store.listPeers();
-    const peer: PeerRecord = {
-      version: 1,
+    const peer: PeerRecordV2 = {
+      version: 2,
       id: this.sessionId,
       alias: existingAlias ?? requestedAlias ?? defaultAlias(this.sessionId, peers),
       ...(sessionName ? { sessionName } : {}),
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
-      ...(existing?.reminderAfterMinutes ? { reminderAfterMinutes: existing.reminderAfterMinutes } : {}),
+      ...(existing && Object.hasOwn(existing, "reminder") ? { reminder: existing.reminder } : {}),
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -231,54 +242,63 @@ export class MailService {
   }
 
   async syncSessionName(sessionName: string | null | undefined): Promise<void> {
-    const peer = await this.store.getPeer(this.sessionId);
-    if (!peer) return;
-
     const nextName = normalizeSessionName(sessionName);
-    if ((peer.sessionName ?? undefined) === nextName) return;
-
-    const next = { ...peer, updatedAt: nowIso() };
-    if (nextName) next.sessionName = nextName;
-    else delete next.sessionName;
-    await this.store.putPeer(next);
+    await this.updateCurrentPeer((peer) => {
+      if ((peer.sessionName ?? undefined) === nextName) return peer;
+      const next = { ...peer, updatedAt: nowIso() };
+      if (nextName) next.sessionName = nextName;
+      else delete next.sessionName;
+      return next;
+    });
   }
 
   async close(): Promise<void> {
     await this.store.removePresence(this.sessionId, this.runtimeId);
   }
 
-  async configure(options: { alias?: string; discoverable?: boolean } = {}): Promise<PeerRecord> {
-    const peer = await this.store.getPeer(this.sessionId);
-    if (!peer) throw new Error("Current session is not registered");
+  async configure(options: { alias?: string; discoverable?: boolean } = {}): Promise<PeerRecordV2> {
     if (options.alias === undefined && options.discoverable === undefined) {
       throw new Error("configure requires alias and/or discoverable");
     }
-
-    const next: PeerRecord = {
-      ...peer,
-      alias: options.alias === undefined ? peer.alias : normalizeAlias(options.alias)!,
-      discoverable: options.discoverable ?? peer.discoverable,
-      updatedAt: nowIso(),
-    };
-    await this.store.putPeer(next);
-    return next;
+    const alias = options.alias === undefined ? undefined : normalizeAlias(options.alias)!;
+    return this.updateCurrentPeer((peer) => {
+      const nextAlias = alias ?? peer.alias;
+      const nextDiscoverable = options.discoverable ?? peer.discoverable;
+      if (nextAlias === peer.alias && nextDiscoverable === peer.discoverable) return peer;
+      return {
+        ...peer,
+        alias: nextAlias,
+        discoverable: nextDiscoverable,
+        updatedAt: nowIso(),
+      };
+    });
   }
 
-  async configureReminder(reminderAfterMinutes: number | null): Promise<PeerRecord> {
+  async configureReminder(policy: ReminderPolicy | undefined): Promise<PeerRecordV2> {
+    const stored = policy === undefined
+      ? undefined
+      : policy.kind === "after-minutes" ? policy.minutes : policy.kind;
+    if (stored !== undefined) parseReminderPolicy(stored);
+
+    return this.updateCurrentPeer((peer) => {
+      const current = Object.hasOwn(peer, "reminder") ? peer.reminder : undefined;
+      if (current === stored) return peer;
+      const next: PeerRecordV2 = { ...peer, updatedAt: nowIso() };
+      if (stored === undefined) delete next.reminder;
+      else next.reminder = stored;
+      return next;
+    });
+  }
+
+  async getReminderOverride(): Promise<ReminderPolicy | undefined> {
     const peer = await this.store.getPeer(this.sessionId);
-    if (!peer) throw new Error("Current session is not registered");
-
-    const normalized = normalizeReminderMinutes(reminderAfterMinutes);
-    const next: PeerRecord = { ...peer, updatedAt: nowIso() };
-    if (normalized == null) delete next.reminderAfterMinutes;
-    else next.reminderAfterMinutes = normalized;
-
-    await this.store.putPeer(next);
-    return next;
+    return peer && Object.hasOwn(peer, "reminder")
+      ? parseReminderPolicy(peer.reminder)
+      : undefined;
   }
 
-  async reminderAfterMinutes(): Promise<number | null> {
-    return normalizeReminderMinutes((await this.store.getPeer(this.sessionId))?.reminderAfterMinutes);
+  async getEffectiveReminder(): Promise<EffectiveReminderPolicy> {
+    return this.effectiveReminderForPeer(await this.store.getPeer(this.sessionId));
   }
 
   async discover(options: { includeInactive?: boolean } = {}): Promise<DiscoveredPeer[]> {
@@ -318,7 +338,7 @@ export class MailService {
           cc: pending.filter((delivery) => delivery.kind === "cc").length,
           oldestToAt,
         },
-        reminderAfterMinutes: normalizeReminderMinutes(peers.get(session.id)?.reminderAfterMinutes),
+        reminder: this.observedReminderForPeer(session.self === true, peers.get(session.id) ?? null),
       });
     }
 
@@ -421,6 +441,17 @@ export class MailService {
     return { id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias };
   }
 
+  async listUnpresentedForAttention(): Promise<MailMessage[]> {
+    const deliveries = (await this.store.listDeliveries(this.sessionId))
+      .filter((delivery) => !delivery.presentedAt);
+    const messages: MailMessage[] = [];
+    for (const delivery of deliveries) {
+      const message = await this.store.getMessage(delivery.messageId);
+      if (message) messages.push(await this.decorateMessage(message, delivery));
+    }
+    return messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
   async listInbox(options: {
     messageId?: string;
     unpresentedOnly?: boolean;
@@ -454,23 +485,26 @@ export class MailService {
 
     const deliveries = (await this.store.listDeliveries(this.sessionId))
       .filter((delivery) => !unpresentedOnly || !delivery.presentedAt);
-
-    const entries: MailMessage[] = [];
+    const entries: Array<{ message: MessageRecord; delivery: DeliveryRecord }> = [];
     for (const delivery of deliveries) {
       const message = await this.store.getMessage(delivery.messageId);
-      if (!message) continue;
+      if (message) entries.push({ message, delivery });
+    }
+    entries.sort((a, b) => oldestFirst
+      ? sortByCreatedAsc(a.message, b.message)
+      : sortByCreatedDesc(a.message, b.message));
 
+    const output: MailMessage[] = [];
+    for (const { message, delivery } of entries.slice(0, boundedLimit(options.limit))) {
       let visibleDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
         visibleDelivery = await this.store.updateDelivery(this.sessionId, delivery.messageId, {
           presentedAt: nowIso(),
         }) ?? delivery;
       }
-      entries.push(await this.decorateMessage(message, visibleDelivery));
+      output.push(await this.decorateMessage(message, visibleDelivery));
     }
-
-    entries.sort(oldestFirst ? sortByCreatedAsc : sortByCreatedDesc);
-    return entries.slice(0, boundedLimit(options.limit));
+    return output;
   }
 
   async markPresented(messageId: string): Promise<DeliveryRecord | null> {
@@ -579,11 +613,7 @@ export class MailService {
 
   async status(): Promise<MailStatus> {
     const peer = await this.store.getPeer(this.sessionId);
-    const inbox = await this.listInbox({
-      unpresentedOnly: true,
-      limit: 100,
-      markPresented: false,
-    }) as MailMessage[];
+    const inbox = await this.listUnpresentedForAttention();
 
     return {
       id: this.sessionId,
@@ -591,7 +621,7 @@ export class MailService {
       alias: peer?.alias ?? defaultAlias(this.sessionId, []),
       sessionName: peer?.sessionName ?? null,
       discoverable: peer?.discoverable !== false,
-      reminderAfterMinutes: normalizeReminderMinutes(peer?.reminderAfterMinutes),
+      reminder: reminderStatus(await this.getEffectiveReminder()),
       mailRoot: this.root,
       unpresented: {
         to: inbox.filter((item) => item.delivery?.kind === "to").length,
@@ -599,6 +629,13 @@ export class MailService {
       },
       activePeerCount: (await this.discover()).length,
     };
+  }
+
+  /** Oldest unpresented direct-To delivery time for the current mailbox, or null. */
+  async oldestPendingToAt(): Promise<string | null> {
+    const deliveries = await this.store.listDeliveries(this.sessionId);
+    const pendingTo = deliveries.filter((delivery) => !delivery.presentedAt && delivery.kind === "to");
+    return pendingTo.map((delivery) => delivery.deliveredAt).filter(Boolean).sort()[0] ?? null;
   }
 
   private async sendFrom(input: SendMailInput & {
@@ -690,7 +727,7 @@ export class MailService {
         messageId: message.id,
         recipientId,
         kind,
-        deliveredAt: message.createdAt,
+        deliveredAt: nowIso(),
         presentedAt: null,
       });
     }
@@ -830,6 +867,47 @@ export class MailService {
     return output;
   }
 
+  private async updateCurrentPeer(
+    update: (peer: PeerRecordV2) => PeerRecordV2,
+  ): Promise<PeerRecordV2> {
+    let resolveResult!: (peer: PeerRecordV2) => void;
+    let rejectResult!: (error: unknown) => void;
+    const result = new Promise<PeerRecordV2>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+
+    this.peerMutationQueue = this.peerMutationQueue.then(async () => {
+      try {
+        const peer = await this.store.getPeer(this.sessionId);
+        if (!peer) throw new Error("Current session is not registered");
+        const next = update(peer);
+        if (next !== peer) await this.store.putPeer(next);
+        resolveResult(next);
+      } catch (error) {
+        rejectResult(error);
+      }
+    });
+    return result;
+  }
+
+  private observedReminderForPeer(self: boolean, peer: PeerRecordV2 | null): ReminderStatus | null {
+    if (self) return reminderStatus(this.effectiveReminderForPeer(peer));
+    if (!peer || !Object.hasOwn(peer, "reminder")) return null;
+    return reminderStatus({
+      policy: parseReminderPolicy(peer.reminder),
+      source: "mailbox",
+    });
+  }
+
+  private effectiveReminderForPeer(peer: PeerRecordV2 | null): EffectiveReminderPolicy {
+    if (!peer || !Object.hasOwn(peer, "reminder")) return this.defaultReminder;
+    return {
+      policy: parseReminderPolicy(peer.reminder as StoredReminderOverride),
+      source: "mailbox",
+    };
+  }
+
   private async currentPresence() {
     const all = await this.store.listPresence();
     return all.find(
@@ -850,7 +928,7 @@ export class MailService {
     return new Set((await this.activePresence()).map((presence) => presence.sessionId));
   }
 
-  private async peerMap(): Promise<Map<string, PeerRecord>> {
+  private async peerMap(): Promise<Map<string, PeerRecordV2>> {
     return new Map((await this.store.listPeers()).map((peer) => [peer.id, peer]));
   }
 }

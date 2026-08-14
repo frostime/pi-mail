@@ -1,8 +1,10 @@
+import type { ReminderStatus } from "./attention-policy.ts";
+
 export type RecipientKind = "to" | "cc";
 export type SenderKind = "session" | "human";
 export type WaitReason = "pending" | "new" | "timeout";
 
-export interface PeerRecord {
+export interface LegacyPeerRecord {
   version: 1;
   id: string;
   alias: string;
@@ -12,8 +14,7 @@ export interface PeerRecord {
   discoverable: boolean;
   createdAt: string;
   updatedAt: string;
-  /** Optional user-owned stale-mail reminder policy. Absent means disabled. */
-  reminderAfterMinutes?: number;
+  reminderAfterMinutes?: number | null;
   /** Compatibility with Pi Mail 0.4 tombstones. New deletions remove the peer record. */
   deletedAt?: string;
 }
@@ -82,7 +83,7 @@ export interface MailStatus {
   alias: string;
   sessionName: string | null;
   discoverable: boolean;
-  reminderAfterMinutes: number | null;
+  reminder: ReminderStatus;
   mailRoot: string;
   unpresented: { to: number; cc: number };
   activePeerCount: number;
@@ -105,7 +106,7 @@ export interface MailboxOverview extends DiscoveredPeer {
     cc: number;
     oldestToAt: string | null;
   };
-  reminderAfterMinutes: number | null;
+  reminder: ReminderStatus | null;
 }
 
 export interface SentRecipient extends PeerAddress {

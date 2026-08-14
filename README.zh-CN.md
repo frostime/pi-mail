@@ -77,6 +77,8 @@ Pi Mail 同时只提供少量用户侧能力：
 
 - `/mail-ui` 打开当前项目的本地邮箱和写信界面；
 - `/mail-reminder` 设置静默邮件长时间未处理时的可选提醒；
+- `/mail-status` 显示当前 mailbox 与 inbox 状态；
+- `/mail-rename` 设置 mailbox 名称。
 - Pi 底部状态栏显示当前 session 的待处理邮件数量。
 
 运行时不依赖第三方 NPM 包，邮件只使用 Node 文件系统能力保存在本地。
@@ -118,9 +120,9 @@ sequenceDiagram
 
 只要收件方的 mailbox 仍然存在，即使对应 session 暂时离线，邮件也会保留下来。一个 Agent 可以先留下结论或请求，等另一个 session 恢复后再处理。
 
-![Pi Mail 积压提醒与收件箱](./assets/notice.jpg)
+![Pi Mail 待处理收件箱](./assets/notice.jpg)
 
-*静默直接邮件会显示为待处理邮件，Agent 通过 inbox 查看具体内容。*
+*静默直接邮件保持待处理状态，直到 Agent 查看收件箱。*
 
 ### 等待回复
 
@@ -168,14 +170,43 @@ sequenceDiagram
 
 ### 邮件提醒
 
-当前 session 存在待处理邮件时，Pi 底部会显示紧凑的 `mail N` 状态。用户还可以设置：当一封静默直接邮件等待超过指定分钟数时发出提醒。
+当前 session 存在待处理邮件时，Pi 底部会显示被动的 `mail N` 状态。邮件数量本身不会触发模型轮次。收件邮箱可以选择为静默直接邮件启用一次性的纯计数提醒：
 
 ```text
-/mail-reminder 30
+/mail-reminder
 /mail-reminder off
+/mail-reminder after-turn
+/mail-reminder 30
+/mail-reminder default
 ```
 
-提醒默认关闭。
+`off` 会彻底关闭静默邮件因等待时长、数量或 Agent 生命周期而触发的自动轮次。`after-turn` 在当前 Agent 运行完全结束后提醒；如果 Pi 已经空闲，则立即提醒。1 到 1440 的整数表示最早一封符合条件的静默邮件等待多少分钟后提醒。提醒不包含邮件正文，不会把邮件标记为已呈现；同一封邮件在当前 Pi session history 中最多只会被提醒一次。
+
+有效配置按“邮箱覆盖值 → 受信任项目默认值 → 全局默认值 → 内置 `off`”解析。`default` 会删除邮箱覆盖值并恢复继承。项目设置取自当前 worktree，并且只有在 Pi 信任该项目时才生效：
+
+```json
+{
+  "npm:pi-mail": {
+    "reminder": "after-turn"
+  }
+}
+```
+
+配置值可以是 `"off"`、`"after-turn"`，或 1 到 1440 的整数。将同一对象写入 Pi 全局 settings 可设置全局默认值；写入当前项目的 `.pi/settings.json` 可设置受信任项目默认值。
+
+### Mailbox 状态与命名
+
+```text
+/mail-status
+```
+
+打印当前 mailbox 名称、session 名称、是否可被发现、活跃 peer 数量、待处理 inbox 计数、等待最久的直接邮件以及当前生效的提醒策略。该命令只读，不会改变投递或呈现状态。
+
+```text
+/mail-rename <name>
+```
+
+设置其他 session 用于寻址本 mailbox 的名称（alias）。名称长度为 1 到 64 个字符，不能包含斜杠或控制字符。不带参数运行时会打印当前名称和用法。允许重名，但如果所选名称与其他 mailbox 相同，Pi Mail 会发出警告，因为此时寻址可能需要使用 session ID。
 
 ## 范围与边界
 

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { HUMAN_PRINCIPAL_ID, MailService } from "../extensions/pi-mail/mail-service.ts";
-import { isOverdueDirectMail, mailboxNoticeBucket, normalizeReminderMinutes, shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
+import { shouldInterruptForPeerMail } from "../extensions/pi-mail/attention-policy.ts";
 import { resolveProjectRoot } from "../extensions/pi-mail/project-root.ts";
 import { BODY_PREVIEW_CHARS, formatPeerMailContent, formatToolContent } from "../extensions/pi-mail/tool-presentation.ts";
 import { shortSessionId } from "../extensions/pi-mail/identity.ts";
@@ -90,7 +90,7 @@ test("legacy timestamp-prefix default aliases migrate to generated aliases", asy
   const service = new MailService({ cwd, sessionId, runtimeId: "runtime-migrate", presenceTtlMs: 60_000 });
   await service.store.init();
   const timestamp = new Date().toISOString();
-  await service.store.putPeer({
+  await writeFile(path.join(service.root, "peers", `${sessionId}.json`), JSON.stringify({
     version: 1,
     id: sessionId,
     alias: "session-019ff5f7",
@@ -98,7 +98,7 @@ test("legacy timestamp-prefix default aliases migrate to generated aliases", asy
     discoverable: true,
     createdAt: timestamp,
     updatedAt: timestamp,
-  });
+  }));
 
   const peer = await service.init();
   assert.equal(peer.alias, "S716");
@@ -173,7 +173,6 @@ test("peer mail is quiet by default and persists an explicit notify hint", async
   assert.equal(shouldInterruptForPeerMail(quietDelivery), false);
   assert.equal(shouldInterruptForPeerMail(notifyingDelivery), true);
   assert.equal(shouldInterruptForPeerMail(notifyingCc), false);
-  assert.deepEqual([0, 1, 2, 3, 5, 6].map(mailboxNoticeBucket), [0, 0, 0, 1, 1, 2]);
 });
 
 test("sending to an inactive historical mailbox succeeds and reports it inactive", async () => {
@@ -468,6 +467,41 @@ test("mail views include creation timestamps while keeping previews bounded", as
   assert.doesNotMatch(injectedText, /thread_id=/);
 });
 
+test("status presentation validates canonical and restored legacy reminder details", () => {
+  const base = {
+    id: "session",
+    shortId: "session",
+    alias: "mailbox",
+    sessionName: null,
+    discoverable: true,
+    mailRoot: "/mail",
+    unpresented: { to: 0, cc: 0 },
+    activePeerCount: 0,
+  };
+
+  const valid = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", minutes: 30, source: "project" },
+  });
+  const legacy = formatToolContent("status", { ...base, reminderAfterMinutes: 30 });
+  const missingMinutes = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", source: "project" },
+  });
+  const invalidCanonical = formatToolContent("status", {
+    ...base,
+    reminder: { mode: "after-minutes", minutes: 1441, source: "global" },
+  });
+  const invalidLegacy = formatToolContent("status", { ...base, reminderAfterMinutes: 1441 });
+
+  assert.match(valid, /Reminder: 30m \(project\)/);
+  assert.match(legacy, /Reminder: 30m \(mailbox\)/);
+  for (const text of [missingMinutes, invalidCanonical, invalidLegacy]) {
+    assert.match(text, /Reminder: off \(built-in\)/);
+    assert.doesNotMatch(text, /undefinedm|1441m/);
+  }
+});
+
 test("Pi Mail 0.1 messages without senderKind remain session-origin messages", async () => {
   const { a, b } = await makeServices();
   const createdAt = new Date().toISOString();
@@ -524,49 +558,193 @@ test("linked Git worktrees resolve to one canonical project root", async (t) => 
 });
 
 
-test("stale-mail reminder is opt-in, persisted, and only applies to quiet direct mail", async () => {
-  const { cwd, a, b } = await makeServices();
-  assert.equal(await b.reminderAfterMinutes(), null);
+test("mailbox override wins over defaults and clearing it restores inheritance", async () => {
+  const { cwd, b } = await makeServices();
+  assert.deepEqual(await b.getEffectiveReminder(), { policy: { kind: "off" }, source: "built-in" });
 
-  await b.configureReminder(30);
-  assert.equal(await b.reminderAfterMinutes(), 30);
+  await b.configureReminder({ kind: "after-minutes", minutes: 30 });
+  assert.deepEqual(await b.getEffectiveReminder(), { policy: { kind: "after-minutes", minutes: 30 }, source: "mailbox" });
 
-  const sent = await a.send({ to: ["bob"], body: "quiet direct" });
-  const delivery = await b.store.getDelivery(b.sessionId, sent.id);
-  assert.ok(delivery);
-  const oldDeliveredAt = new Date(Date.now() - 31 * 60_000).toISOString();
-  await b.store.putDelivery({ ...delivery!, deliveredAt: oldDeliveredAt });
-  const quiet = await b.listInbox({ messageId: sent.id, markPresented: false }) as MailMessage;
-  assert.equal(isOverdueDirectMail(quiet, 30), true);
-
-  const notifying = await a.send({ to: ["bob"], body: "urgent", notify: true });
-  const notifyingDelivery = await b.store.getDelivery(b.sessionId, notifying.id);
-  await b.store.putDelivery({ ...notifyingDelivery!, deliveredAt: oldDeliveredAt });
-  const notifyingMail = await b.listInbox({ messageId: notifying.id, markPresented: false }) as MailMessage;
-  assert.equal(isOverdueDirectMail(notifyingMail, 30), false);
-
-  const resumed = new MailService({ cwd, sessionId: b.sessionId, runtimeId: "runtime-b-reminder-resume", presenceTtlMs: 60_000 });
+  const resumed = new MailService({
+    cwd,
+    sessionId: b.sessionId,
+    runtimeId: "runtime-b-reminder-resume",
+    presenceTtlMs: 60_000,
+    defaultReminder: { policy: { kind: "after-turn" }, source: "project" },
+  });
   await resumed.init();
-  assert.equal(await resumed.reminderAfterMinutes(), 30);
-  await resumed.configureReminder(null);
-  assert.equal(await resumed.reminderAfterMinutes(), null);
-  assert.equal(normalizeReminderMinutes(0), null);
+  assert.deepEqual(await resumed.getEffectiveReminder(), { policy: { kind: "after-minutes", minutes: 30 }, source: "mailbox" });
+  await resumed.configureReminder(undefined);
+  assert.deepEqual(await resumed.getEffectiveReminder(), { policy: { kind: "after-turn" }, source: "project" });
+  await resumed.configureReminder({ kind: "off" });
+  assert.deepEqual(await resumed.getEffectiveReminder(), { policy: { kind: "off" }, source: "mailbox" });
 });
 
-test("project mailbox overview exposes pending To/Cc state without marking mail presented", async () => {
+test("legacy peers decode conservatively and current writes use version 2", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-peer-v1-"));
+  const sessionId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+  const service = new MailService({
+    cwd,
+    sessionId,
+    runtimeId: "runtime-peer-v1",
+    defaultReminder: { policy: { kind: "after-turn" }, source: "global" },
+  });
+  await service.store.init();
+  const timestamp = new Date().toISOString();
+  const file = path.join(service.root, "peers", `${sessionId}.json`);
+  await writeFile(file, JSON.stringify({
+    version: 1,
+    id: sessionId,
+    alias: "legacy",
+    cwd,
+    discoverable: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }));
+
+  await service.init();
+  assert.deepEqual(await service.getEffectiveReminder(), { policy: { kind: "off" }, source: "mailbox" });
+  const stored = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  assert.equal(stored.version, 2);
+  assert.equal(stored.reminder, "off");
+  assert.equal(Object.hasOwn(stored, "reminderAfterMinutes"), false);
+});
+
+test("malformed and unknown peer versions fail with the peer path", async () => {
+  const { b } = await makeServices();
+  const file = path.join(b.root, "peers", `${b.sessionId}.json`);
+  const current = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+
+  await writeFile(file, JSON.stringify({ ...current, version: 2, reminder: null }));
+  await assert.rejects(() => b.store.getPeer(b.sessionId), (error: Error) => error.message.includes(file) && /Reminder must/.test(error.message));
+
+  await writeFile(file, JSON.stringify({ ...current, version: 99 }));
+  await assert.rejects(() => b.store.getPeer(b.sessionId), (error: Error) => error.message.includes(file) && /unsupported version 99/.test(error.message));
+});
+
+test("v2 peers reject legacy reminder fields even when a canonical override exists", async () => {
+  const { b } = await makeServices();
+  const file = path.join(b.root, "peers", `${b.sessionId}.json`);
+  const current = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  await writeFile(file, JSON.stringify({
+    ...current,
+    version: 2,
+    reminder: "off",
+    reminderAfterMinutes: 30,
+  }));
+  await assert.rejects(
+    () => b.store.getPeer(b.sessionId),
+    (error: Error) => error.message.includes(file) && /must not contain legacy reminderAfterMinutes/.test(error.message),
+  );
+});
+
+test("bounded inbox reads present only returned deliveries", async () => {
+  const { a, b } = await makeServices();
+  const first = await a.send({ to: ["bob"], body: "first" });
+  const second = await a.send({ to: ["bob"], body: "second" });
+  const returned = await b.listInbox({ limit: 1, markPresented: true }) as MailMessage[];
+  assert.equal(returned.length, 1);
+  const deliveries = await Promise.all([first.id, second.id].map((id) => b.store.getDelivery(b.sessionId, id)));
+  assert.equal(deliveries.filter((delivery) => delivery?.presentedAt).length, 1);
+  assert.equal((await b.listUnpresentedForAttention()).length, 1);
+});
+
+test("recipient delivery time is recorded when each delivery is created", async () => {
+  const { a, b } = await makeServices();
+  const before = Date.now();
+  const message = await a.send({ to: ["bob"], body: "timestamp" });
+  const delivery = await b.store.getDelivery(b.sessionId, message.id);
+  assert.ok(delivery);
+  assert.ok(Date.parse(delivery.deliveredAt) >= before);
+  assert.ok(Date.parse(delivery.deliveredAt) >= Date.parse(message.createdAt));
+});
+
+test("concurrent peer updates preserve session name and reminder fields", async () => {
+  const { b } = await makeServices();
+  const putPeer = b.store.putPeer.bind(b.store);
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let firstWrite = true;
+  b.store.putPeer = async (peer) => {
+    if (firstWrite) {
+      firstWrite = false;
+      await blocked;
+    }
+    await putPeer(peer);
+  };
+
+  const naming = b.syncSessionName("Concurrent review");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const reminder = b.configureReminder({ kind: "after-turn" });
+  release();
+  await Promise.all([naming, reminder]);
+
+  const peer = await b.store.getPeer(b.sessionId);
+  assert.equal(peer?.sessionName, "Concurrent review");
+  assert.equal(peer?.reminder, "after-turn");
+});
+
+test("reminder writes validate at the service boundary and no-op updates do not rewrite peers", async () => {
+  const { b } = await makeServices();
+  const before = await b.store.getPeer(b.sessionId);
+  await b.configureReminder(undefined);
+  assert.equal((await b.store.getPeer(b.sessionId))?.updatedAt, before?.updatedAt);
+  await assert.rejects(
+    () => b.configureReminder({ kind: "after-minutes", minutes: 0 }),
+    /Reminder must be/,
+  );
+  assert.deepEqual(await b.getEffectiveReminder(), { policy: { kind: "off" }, source: "built-in" });
+});
+
+test("status counts the complete unpresented mailbox beyond display limits", async () => {
+  const { a, b } = await makeServices();
+  const createdAt = new Date().toISOString();
+  for (let index = 0; index < 101; index += 1) {
+    const id = `bulk${String(index).padStart(3, "0")}`;
+    await a.store.tryCreateMessage({
+      version: 1,
+      id,
+      senderKind: "session",
+      from: a.sessionId,
+      fromAlias: "alice",
+      to: [b.sessionId],
+      cc: [],
+      subject: id,
+      body: id,
+      notify: false,
+      threadId: id,
+      inReplyTo: null,
+      createdAt,
+    });
+    await a.store.putDelivery({
+      version: 1,
+      messageId: id,
+      recipientId: b.sessionId,
+      kind: "to",
+      deliveredAt: createdAt,
+      presentedAt: null,
+    });
+  }
+  assert.equal((await b.status()).unpresented.to, 101);
+});
+
+test("project mailbox overview distinguishes self, explicit override, and unobservable inheritance", async () => {
   const { a, b, c } = await makeServices();
   const direct = await a.send({ to: ["bob"], cc: ["carol"], body: "state" });
-  await b.configureReminder(30);
+  await b.configureReminder({ kind: "after-minutes", minutes: 30 });
 
   const overviews = await a.listProjectMailboxes({ includeInactive: true });
+  const alice = overviews.find((mailbox) => mailbox.id === a.sessionId);
   const bob = overviews.find((mailbox) => mailbox.id === b.sessionId);
   const carol = overviews.find((mailbox) => mailbox.id === c.sessionId);
+  assert.deepEqual(alice?.reminder, { mode: "off", source: "built-in" });
   assert.equal(bob?.pending.to, 1);
   assert.equal(bob?.pending.cc, 0);
   assert.ok(bob?.pending.oldestToAt);
-  assert.equal(bob?.reminderAfterMinutes, 30);
+  assert.deepEqual(bob?.reminder, { mode: "after-minutes", minutes: 30, source: "mailbox" });
   assert.equal(carol?.pending.to, 0);
   assert.equal(carol?.pending.cc, 1);
   assert.equal(carol?.pending.oldestToAt, null);
+  assert.equal(carol?.reminder, null);
   assert.equal((await b.store.getDelivery(b.sessionId, direct.id))?.presentedAt, null);
 });

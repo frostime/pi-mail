@@ -198,25 +198,27 @@
           subtitle: "Local mailbox view for this project.", themeAuto: "Theme: Auto", themeLight: "Theme: Light", themeDark: "Theme: Dark",
           refresh: "Refresh", closeServer: "Close UI server", overview: "Overview", messages: "Recent messages", messagesHint: "latest 100",
           compose: "Compose as user", humanOrigin: "human origin", recipients: "Recipients", recipientHint: "choose To / Cc", subject: "Subject",
-          body: "Message", send: "Send", peers: "Sessions", activePeers: "Active peers", unreadTo: "Unpresented To", unreadCc: "Unpresented Cc", reminder: "Stale reminder", reminderOff: "Off",
+          body: "Message", send: "Send", peers: "Sessions", activePeers: "Active peers", unreadTo: "Unpresented To", unreadCc: "Unpresented Cc", reminder: "Quiet reminder", reminderOff: "off",
+          reminderAfterTurn: "after current turn", reminderMinutes: "after {minutes}m", reminderInheritedUnknown: "inherited (resolved by that session)", sourceMailbox: "mailbox override", sourceProject: "project default", sourceGlobal: "global default", sourceBuiltIn: "built-in default",
           active: "active", inactive: "historical", noPeers: "No sessions found.", noMessages: "No messages yet.", to: "To", cc: "Cc",
           sendSuccess: "Message delivered.", chooseRecipient: "Choose at least one To recipient.", sendFailed: "Send failed", loadFailed: "Failed to load mail state",
           delivered: "delivered", presented: "presented", pending: "not presented", user: "user", closeConfirm: "Close the Pi Mail Web UI server?",
           closed: "The Web UI server has been closed. You can close this tab.", current: "current", selectActive: "To: all active", clearRecipients: "Clear",
           deleteMailbox: "Delete mailbox", deleteConfirm: "Delete mailbox for {name}? Its inbox state will be removed. Shared project messages remain available to other participants.",
-          deleteSuccess: "Mailbox deleted.", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest", reminderEvery: "remind after {minutes}m"
+          deleteSuccess: "Mailbox deleted.", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest"
         },
         zh: {
           subtitle: "当前项目的本地邮箱监督视图。", themeAuto: "主题：自动", themeLight: "主题：亮色", themeDark: "主题：暗色",
           refresh: "刷新", closeServer: "关闭 UI 服务", overview: "概览", messages: "最近邮件", messagesHint: "最近 100 封",
           compose: "以用户身份写信", humanOrigin: "用户来源", recipients: "收件人", recipientHint: "选择 To / Cc", subject: "主题",
-          body: "正文", send: "发送", peers: "Sessions", activePeers: "活跃端点", unreadTo: "未呈现 To", unreadCc: "未呈现 Cc", reminder: "滞留提醒", reminderOff: "关闭",
+          body: "正文", send: "发送", peers: "Sessions", activePeers: "活跃端点", unreadTo: "未呈现 To", unreadCc: "未呈现 Cc", reminder: "静默提醒", reminderOff: "关闭",
+          reminderAfterTurn: "当前轮次结束后", reminderMinutes: "{minutes} 分钟后", reminderInheritedUnknown: "继承（由该 session 解析）", sourceMailbox: "邮箱覆盖值", sourceProject: "项目默认值", sourceGlobal: "全局默认值", sourceBuiltIn: "内置默认值",
           active: "活跃", inactive: "历史", noPeers: "当前没有可显示的 session。", noMessages: "还没有邮件。", to: "To", cc: "Cc",
           sendSuccess: "邮件已投递。", chooseRecipient: "至少选择一个 To 收件人。", sendFailed: "发送失败", loadFailed: "加载邮箱状态失败",
           delivered: "已投递", presented: "已呈现", pending: "未呈现", user: "用户", closeConfirm: "确定关闭 Pi Mail Web UI 服务？",
           closed: "Web UI 服务已关闭，可以关闭此页面。", current: "当前", selectActive: "To：全部活跃", clearRecipients: "清空",
           deleteMailbox: "删除邮箱", deleteConfirm: "确定删除 {name} 的邮箱吗？该 session 的收件箱状态会被移除；与其他参与者共享的项目邮件仍会保留。",
-          deleteSuccess: "邮箱已删除。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久", reminderEvery: "{minutes} 分钟后提醒"
+          deleteSuccess: "邮箱已删除。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久"
         }
       };
 
@@ -278,6 +280,23 @@
         return Object.entries(values).reduce((text, [key, value]) => text.replaceAll(`{${key}}`, String(value)), template);
       }
 
+      function reminderText(reminder) {
+        if (!reminder) return t("reminderOff");
+        const value = reminder.mode === "after-turn"
+          ? t("reminderAfterTurn")
+          : reminder.mode === "after-minutes"
+            ? interpolate(t("reminderMinutes"), { minutes: reminder.minutes })
+            : t("reminderOff");
+        const sourceKey = reminder.source === "mailbox"
+          ? "sourceMailbox"
+          : reminder.source === "project"
+            ? "sourceProject"
+            : reminder.source === "global"
+              ? "sourceGlobal"
+              : "sourceBuiltIn";
+        return `${value} · ${t(sourceKey)}`;
+      }
+
       async function deleteMailbox(peer) {
         if (peer.active || peer.self) return;
         if (!confirm(interpolate(t("deleteConfirm"), { name: `${peerDisplayName(peer)} · ${peerAddress(peer)}` }))) return;
@@ -312,7 +331,7 @@
           [t("activePeers"), data.status.activePeerCount],
           [t("unreadTo"), data.status.unpresented.to],
           [t("unreadCc"), data.status.unpresented.cc],
-          [t("reminder"), data.status.reminderAfterMinutes == null ? t("reminderOff") : `${data.status.reminderAfterMinutes}m`]
+          [t("reminder"), reminderText(data.status.reminder)]
         ];
         $("status").replaceChildren(...metrics.map(([label, value]) => {
           const card = element("div", "metric");
@@ -346,9 +365,7 @@
           if (pendingTo > 0) chips.append(element("span", "chip attention", `${t("waitingTo")}: ${pendingTo}`));
           if (pendingCc > 0) chips.append(element("span", "chip", `${t("waitingCc")}: ${pendingCc}`));
           if (peer.pending?.oldestToAt) chips.append(element("span", "chip", `${t("oldest")}: ${formatAge(peer.pending.oldestToAt)}`));
-          if (peer.reminderAfterMinutes != null) {
-            chips.append(element("span", "chip", interpolate(t("reminderEvery"), { minutes: peer.reminderAfterMinutes })));
-          }
+          chips.append(element("span", "chip", peer.reminder ? reminderText(peer.reminder) : t("reminderInheritedUnknown")));
 
           card.append(
             top,

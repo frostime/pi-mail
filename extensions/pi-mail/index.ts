@@ -3,18 +3,20 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-import { isOverdueDirectMail, MAILBOX_NOTICE_THRESHOLD, mailboxNoticeBucket, shouldInterruptForPeerMail } from "./attention-policy.ts";
-import { HUMAN_PRINCIPAL_ID, MailService } from "./mail-service.ts";
+import { parseReminderPolicy, type ReminderStatus } from "./attention-policy.ts";
+import { createAttentionRuntime, type AttentionRuntime } from "./attention-runtime.ts";
+import { MailService } from "./mail-service.ts";
+import { loadReminderSettings, PI_MAIL_SETTINGS_NAMESPACE, PI_MAIL_REMINDER_SETTING } from "./reminder-settings.ts";
 import {
   collapsedResultLabel,
-  formatPeerMailContent,
   formatToolContent,
+  formatUserReminder,
+  formatUserStatus,
   toolCallLabel,
   type MailAction,
   type MailToolArgs,
   type SendToolDetails,
 } from "./tool-presentation.ts";
-import type { MailMessage } from "./types.ts";
 import { openWebUiInBrowser, startWebUi } from "./web-ui.ts";
 
 const ACTION = Type.Union([
@@ -35,285 +37,240 @@ function toolResult(action: MailAction, value: unknown) {
   };
 }
 
-function humanMailContent(mail: MailMessage): string {
+function reminderHelp(status: ReminderStatus): string {
   return [
-    `[Pi Mail · message ${mail.id}]`,
-    `Sent: ${mail.createdAt}`,
-    `Subject: ${mail.subject}`,
-    "",
-    mail.body,
+    `Pi Mail reminder: ${formatUserReminder(status)}.`,
+    "Usage: /mail-reminder off|after-turn|<1-1440>|default",
+    `Default for unconfigured mailboxes: ${PI_MAIL_SETTINGS_NAMESPACE}.${PI_MAIL_REMINDER_SETTING} in Pi settings.`,
   ].join("\n");
 }
 
-function persistedPeerMailIds(ctx: ExtensionContext): Set<string> {
-  const ids = new Set<string>();
-  for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry.type !== "custom_message" || entry.customType !== "pi-mail") continue;
-    const details = entry.details as { messageId?: unknown } | undefined;
-    if (typeof details?.messageId === "string") ids.add(details.messageId);
-  }
-  return ids;
-}
-
 export default function piMailExtension(pi: ExtensionAPI): void {
-  const runtimeId = randomUUID();
-
   let service: MailService | null = null;
+  let attentionRuntime: AttentionRuntime | null = null;
   let currentCtx: ExtensionContext | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let inboxTimer: ReturnType<typeof setInterval> | null = null;
+  let heartbeatTask: Promise<void> | null = null;
+  let lifecycleGeneration = 0;
   let webUi: Awaited<ReturnType<typeof startWebUi>> | null = null;
-  let processingInbox = false;
-  let lastMailboxNoticeBucket = 0;
-  let staleReminderSent = false;
-  const queuedMessageIds = new Set<string>();
+  let settingsHintShown = false;
 
-  function clearTimers(): void {
+  async function disposeSession(): Promise<void> {
+    lifecycleGeneration += 1;
+    const runtime = attentionRuntime;
+    const mailbox = service;
+    const heartbeat = heartbeatTask;
+    attentionRuntime = null;
+    service = null;
     if (heartbeatTimer) clearInterval(heartbeatTimer);
-    if (inboxTimer) clearInterval(inboxTimer);
     heartbeatTimer = null;
-    inboxTimer = null;
+    await runtime?.stop().catch(() => {});
+    await heartbeat?.catch(() => {});
+    heartbeatTask = null;
+    if (webUi) await webUi.close().catch(() => {});
+    webUi = null;
+    await mailbox?.close().catch(() => {});
+    if (service === null) currentCtx = null;
   }
 
-  async function syncPresentedFromSession(): Promise<void> {
-    if (!service || !currentCtx) return;
-
-    for (const messageId of persistedPeerMailIds(currentCtx)) {
-      await service.markPresented(messageId);
-      queuedMessageIds.delete(messageId);
-    }
+  function isCurrent(generation: number, mailbox: MailService): boolean {
+    return lifecycleGeneration === generation && service === mailbox;
   }
 
-  async function deliverHumanMail(mail: MailMessage): Promise<void> {
-    if (!service || !currentCtx) return;
-
-    const content = humanMailContent(mail);
-    if (currentCtx.isIdle()) pi.sendUserMessage(content);
-    else pi.sendUserMessage(content, { deliverAs: "steer" });
-
-    // sendUserMessage has no extension metadata that can later be matched back
-    // to this delivery, so API acceptance is the strongest visible boundary.
-    await service.markPresented(mail.id);
-  }
-
-  async function deliverNotifyingPeerMail(mail: MailMessage): Promise<void> {
-    if (queuedMessageIds.has(mail.id)) return;
-
-    pi.sendMessage(
-      {
-        customType: "pi-mail",
-        content: formatPeerMailContent(mail),
-        display: true,
-        details: {
-          messageId: mail.id,
-          threadId: mail.threadId,
-          from: mail.from,
-          recipientKind: mail.delivery?.kind,
-        },
-      },
-      { deliverAs: "steer", triggerTurn: true },
-    );
-
-    // Pi may exit before a queued custom message reaches session history.
-    // presentedAt advances only after that durable history entry exists.
-    queuedMessageIds.add(mail.id);
-  }
-
-  function maybeNotifyMailboxBacklog(pendingCount: number): void {
-    const bucket = mailboxNoticeBucket(pendingCount);
-    if (bucket === 0) {
-      lastMailboxNoticeBucket = 0;
-      return;
-    }
-    if (bucket <= lastMailboxNoticeBucket) return;
-
-    lastMailboxNoticeBucket = bucket;
-    pi.sendMessage(
-      {
-        customType: "pi-mail-notice",
-        content: `Pi Mail: ${pendingCount} messages are waiting in your mailbox. Use the mail tool to review them when appropriate.`,
-        display: true,
-        details: { pendingCount },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  }
-
-
-  function refreshFooterStatus(pendingTo: number, pendingCc: number): void {
-    if (!currentCtx) return;
-    const total = pendingTo + pendingCc;
-    currentCtx.ui.setStatus("pi-mail", total > 0 ? `mail ${total}` : undefined);
-  }
-
-  async function maybeNotifyStaleMailbox(pendingDirect: MailMessage[]): Promise<void> {
-    if (!service) return;
-    const reminderAfterMinutes = await service.reminderAfterMinutes();
-    if (reminderAfterMinutes == null || pendingDirect.length === 0 || pendingDirect.length >= MAILBOX_NOTICE_THRESHOLD) {
-      staleReminderSent = false;
-      return;
-    }
-
-    const overdue = pendingDirect.filter((mail) => isOverdueDirectMail(mail, reminderAfterMinutes));
-    if (overdue.length === 0) {
-      staleReminderSent = false;
-      return;
-    }
-    if (staleReminderSent) return;
-
-    staleReminderSent = true;
-    pi.sendMessage(
-      {
-        customType: "pi-mail-reminder",
-        content: `Pi Mail: ${overdue.length} direct message${overdue.length === 1 ? " has" : "s have"} been waiting for at least ${reminderAfterMinutes} minute${reminderAfterMinutes === 1 ? "" : "s"}. Use the mail tool to review your inbox when appropriate.`,
-        display: true,
-        details: { pendingCount: overdue.length, reminderAfterMinutes },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  }
-
-  async function processIncoming(): Promise<void> {
-    if (!service || processingInbox) return;
-    processingInbox = true;
-
-    try {
-      await syncPresentedFromSession();
-      const pending = await service.listInbox({
-        unpresentedOnly: true,
-        limit: 100,
-        oldestFirst: true,
-        markPresented: false,
-      }) as MailMessage[];
-
-      for (const mail of pending) {
-        if (mail.senderKind === "human" || mail.from.id === HUMAN_PRINCIPAL_ID) {
-          await deliverHumanMail(mail);
-          continue;
-        }
-
-        if (shouldInterruptForPeerMail(mail)) {
-          await deliverNotifyingPeerMail(mail);
-        }
-      }
-
-      const silentDirectPending = pending.filter((mail) =>
-        mail.senderKind === "session"
-        && mail.delivery?.kind === "to"
-        && !shouldInterruptForPeerMail(mail)
-        && !queuedMessageIds.has(mail.id)
-      );
-      const pendingCc = pending.filter((mail) => mail.delivery?.kind === "cc").length;
-      maybeNotifyMailboxBacklog(silentDirectPending.length);
-      await maybeNotifyStaleMailbox(silentDirectPending);
-      refreshFooterStatus(
-        pending.filter((mail) => mail.delivery?.kind === "to").length,
-        pendingCc,
-      );
-    } catch (error) {
-      console.error("[pi-mail] incoming delivery failed:", error);
-    } finally {
-      processingInbox = false;
-    }
+  function samePolicy(
+    left: Awaited<ReturnType<MailService["getReminderOverride"]>>,
+    right: Awaited<ReturnType<MailService["getReminderOverride"]>>,
+  ): boolean {
+    return left?.kind === right?.kind
+      && (left?.kind !== "after-minutes" || right?.kind !== "after-minutes" || left.minutes === right.minutes);
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    clearTimers();
-    queuedMessageIds.clear();
-    lastMailboxNoticeBucket = 0;
-    staleReminderSent = false;
+    await disposeSession();
     currentCtx = ctx;
+    settingsHintShown = false;
+    const generation = lifecycleGeneration;
 
-    service = new MailService({
+    const loadedSettings = loadReminderSettings(ctx.cwd, ctx.isProjectTrusted());
+    for (const warning of loadedSettings.warnings) {
+      console.warn(`[pi-mail] ${warning.message}`);
+      if (ctx.hasUI) ctx.ui.notify(warning.message, "warning");
+    }
+
+    const mailbox = new MailService({
       cwd: ctx.cwd,
       sessionId: ctx.sessionManager.getSessionId(),
-      runtimeId,
+      runtimeId: randomUUID(),
+      defaultReminder: loadedSettings.defaultReminder,
     });
-    await service.init({ sessionName: pi.getSessionName() ?? null });
+    await mailbox.init({ sessionName: pi.getSessionName() ?? null });
+    if (lifecycleGeneration !== generation || currentCtx !== ctx) {
+      await mailbox.close().catch(() => {});
+      return;
+    }
+
+    service = mailbox;
+    attentionRuntime = createAttentionRuntime({ pi, ctx, mailbox });
+    attentionRuntime.start();
 
     heartbeatTimer = setInterval(() => {
-      const current = service;
-      if (!current) return;
-      void current.syncSessionName(pi.getSessionName() ?? null)
-        .then(() => current.heartbeat())
-        .catch((error) => console.error("[pi-mail] heartbeat failed:", error));
+      if (heartbeatTask || !isCurrent(generation, mailbox)) return;
+      const task = mailbox.syncSessionName(pi.getSessionName() ?? null)
+        .then(() => {
+          if (!isCurrent(generation, mailbox)) return;
+          return mailbox.heartbeat();
+        })
+        .catch((error) => console.error("[pi-mail] heartbeat failed:", error))
+        .finally(() => {
+          if (heartbeatTask === task) heartbeatTask = null;
+        });
+      heartbeatTask = task;
     }, 5_000);
     heartbeatTimer.unref();
-
-    inboxTimer = setInterval(() => void processIncoming(), 1_000);
-    inboxTimer.unref();
-    setTimeout(() => void processIncoming(), 0).unref();
   });
 
-  pi.on("session_shutdown", async () => {
-    clearTimers();
-    currentCtx?.ui.setStatus("pi-mail", undefined);
-    if (webUi) await webUi.close().catch(() => {});
-    webUi = null;
-    if (service) await service.close().catch(() => {});
-    service = null;
-    currentCtx = null;
-    queuedMessageIds.clear();
-    lastMailboxNoticeBucket = 0;
-    staleReminderSent = false;
+  pi.on("agent_settled", async () => {
+    await attentionRuntime?.onAgentSettled();
+  });
+
+  pi.on("session_shutdown", async (_event, ctx) => {
+    if (currentCtx !== ctx) return;
+    await disposeSession();
   });
 
   pi.registerCommand("mail-reminder", {
-    description: "Configure stale-mail reminders for this mailbox: /mail-reminder off|<minutes>",
+    description: "Configure quiet-mail reminders: /mail-reminder off|after-turn|<minutes>|default",
     handler: async (args, ctx) => {
-      if (!service) {
+      const mailbox = service;
+      const runtime = attentionRuntime;
+      if (!mailbox || !runtime) {
         ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
         return;
       }
 
+      const generation = lifecycleGeneration;
       const value = args.trim().toLowerCase();
       if (!value) {
-        const minutes = await service.reminderAfterMinutes();
+        const status = await runtime.getReminderStatus();
+        if (!isCurrent(generation, mailbox)) return;
+        ctx.ui.notify(reminderHelp(status), "info");
+        return;
+      }
+
+      let policy;
+      try {
+        policy = value === "default"
+          ? undefined
+          : parseReminderPolicy(/^\d+$/.test(value) ? Number(value) : value);
+      } catch {
+        ctx.ui.notify("Usage: /mail-reminder off|after-turn|<1-1440>|default", "error");
+        return;
+      }
+
+      const previous = await mailbox.getReminderOverride();
+      if (!isCurrent(generation, mailbox)) return;
+      await mailbox.configureReminder(policy);
+      if (!isCurrent(generation, mailbox)) return;
+      const changed = !samePolicy(previous, policy);
+      const status = await runtime.getReminderStatus();
+      if (!isCurrent(generation, mailbox)) return;
+      ctx.ui.notify(`Pi Mail reminder set to ${formatUserReminder(status)}.`, "info");
+      if (changed && !settingsHintShown && mailbox.defaultReminder.source === "built-in") {
+        settingsHintShown = true;
+        ctx.ui.notify(`Set ${PI_MAIL_SETTINGS_NAMESPACE}.${PI_MAIL_REMINDER_SETTING} in Pi settings to define the default for unconfigured mailboxes.`, "info");
+      }
+      if (changed) await runtime.checkNow();
+    },
+  });
+
+  pi.registerCommand("mail-status", {
+    description: "Show the current Pi Mail mailbox and inbox status",
+    handler: async (_args, ctx) => {
+      const mailbox = service;
+      if (!mailbox) {
+        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
+        return;
+      }
+
+      const generation = lifecycleGeneration;
+      const status = await mailbox.status();
+      const oldestToAt = await mailbox.oldestPendingToAt();
+      if (!isCurrent(generation, mailbox)) return;
+      ctx.ui.notify(formatUserStatus(status, oldestToAt), "info");
+    },
+  });
+
+  pi.registerCommand("mail-rename", {
+    description: "Rename the current mailbox: /mail-rename <name>",
+    handler: async (args, ctx) => {
+      const mailbox = service;
+      if (!mailbox) {
+        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
+        return;
+      }
+
+      const generation = lifecycleGeneration;
+      const value = args.trim();
+      if (!value) {
+        const status = await mailbox.status();
+        if (!isCurrent(generation, mailbox)) return;
         ctx.ui.notify(
-          minutes == null ? "Pi Mail stale-mail reminder is off." : `Pi Mail stale-mail reminder: ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+          `Pi Mail mailbox is currently "${status.alias}". Usage: /mail-rename <name> (1-64 characters, no slashes).`,
           "info",
         );
         return;
       }
 
-      const minutes = value === "off" || value === "0" ? null : Number(value);
-      if (minutes !== null && (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440)) {
-        ctx.ui.notify("Usage: /mail-reminder off|<1-1440 minutes>", "error");
-        return;
-      }
+      const peer = await mailbox.configure({ alias: value }).catch((error) => {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        return null;
+      });
+      if (!peer || !isCurrent(generation, mailbox)) return;
 
-      await service.configureReminder(minutes);
-      staleReminderSent = false;
-      ctx.ui.notify(
-        minutes == null ? "Pi Mail stale-mail reminder disabled." : `Pi Mail stale-mail reminder set to ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-        "info",
-      );
-      void processIncoming();
+      const peers = await mailbox.discover({ includeInactive: true });
+      if (!isCurrent(generation, mailbox)) return;
+      const clashes = peers.filter((other) => other.alias.toLowerCase() === peer.alias.toLowerCase());
+      const note = clashes.length
+        ? ` Alias is also used by ${clashes.map((other) => `${other.alias} (${other.shortId})`).join(", ")}; addressing may require the session ID.`
+        : "";
+      ctx.ui.notify(`Pi Mail mailbox renamed to "${peer.alias}".${note}`, "info");
     },
   });
 
   pi.registerCommand("mail-ui", {
     description: "Open Pi Mail Web UI; use /mail-ui close to stop it",
     handler: async (args, ctx) => {
-      if (!service) {
+      const mailbox = service;
+      if (!mailbox) {
         ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
         return;
       }
 
+      const generation = lifecycleGeneration;
       if (args.trim().toLowerCase() === "close") {
         if (!webUi || webUi.closed) {
           webUi = null;
           ctx.ui.notify("Pi Mail Web UI is not running.", "info");
           return;
         }
-        await webUi.close();
-        webUi = null;
+        const handle = webUi;
+        await handle.close();
+        if (!isCurrent(generation, mailbox)) return;
+        if (webUi === handle) webUi = null;
         ctx.ui.notify("Pi Mail Web UI stopped.", "info");
         return;
       }
 
-      await service.syncSessionName(pi.getSessionName() ?? null);
-      if (!webUi || webUi.closed) webUi = await startWebUi(service);
+      await mailbox.syncSessionName(pi.getSessionName() ?? null);
+      if (!isCurrent(generation, mailbox)) return;
+      if (!webUi || webUi.closed) {
+        const started = await startWebUi(mailbox);
+        if (!isCurrent(generation, mailbox)) {
+          await started.close().catch(() => {});
+          return;
+        }
+        webUi = started;
+      }
       openWebUiInBrowser(webUi.url);
       ctx.ui.notify(`Pi Mail Web UI: ${webUi.url}`, "info");
     },
@@ -342,15 +299,16 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     }),
 
     async execute(_toolCallId, params, signal) {
-      if (!service) throw new Error("Pi Mail is not ready for the current session");
+      const mailbox = service;
+      if (!mailbox) throw new Error("Pi Mail is not ready for the current session");
 
       switch (params.action) {
         case "status":
-          return toolResult("status", await service.status());
+          return toolResult("status", await mailbox.status());
         case "discover":
-          return toolResult("discover", await service.discover({ includeInactive: params.include_inactive ?? false }));
+          return toolResult("discover", await mailbox.discover({ includeInactive: params.include_inactive ?? false }));
         case "send": {
-          const message = await service.send({
+          const message = await mailbox.send({
             to: params.to,
             cc: params.cc ?? [],
             subject: params.subject,
@@ -361,27 +319,27 @@ export default function piMailExtension(pi: ExtensionAPI): void {
           });
           return toolResult("send", {
             message,
-            recipients: await service.recipientStatusesFor(message.id),
+            recipients: await mailbox.recipientStatusesFor(message.id),
           } satisfies SendToolDetails);
         }
         case "inbox":
-          return toolResult("inbox", await service.listInbox({
+          return toolResult("inbox", await mailbox.listInbox({
             messageId: params.message_id,
             unpresentedOnly: params.unpresented_only ?? false,
             limit: params.limit,
             markPresented: true,
           }));
         case "sent":
-          return toolResult("sent", await service.listSent({ limit: params.limit }));
+          return toolResult("sent", await mailbox.listSent({ limit: params.limit }));
         case "thread":
-          return toolResult("thread", await service.thread(params.message_id));
+          return toolResult("thread", await mailbox.thread(params.message_id));
         case "wait":
-          return toolResult("wait", await service.waitForInbox({
+          return toolResult("wait", await mailbox.waitForInbox({
             timeoutMs: (params.timeout_seconds ?? 60) * 1_000,
             signal,
           }));
         case "configure":
-          return toolResult("configure", await service.configure({
+          return toolResult("configure", await mailbox.configure({
             alias: params.alias,
             discoverable: params.discoverable,
           }));

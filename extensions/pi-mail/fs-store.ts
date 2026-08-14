@@ -10,10 +10,10 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { decodePeerRecord, type PeerRecordV2 } from "./peer-record.ts";
 import type {
   DeliveryRecord,
   MessageRecord,
-  PeerRecord,
   PresenceRecord,
 } from "./types.ts";
 
@@ -108,17 +108,34 @@ export class FsMailStore {
     }
   }
 
-  async getPeer(peerId: string): Promise<PeerRecord | null> {
-    return readJson(this.peerFile(peerId));
+  async getPeer(peerId: string): Promise<PeerRecordV2 | null> {
+    const file = this.peerFile(peerId);
+    const value = await readJson(file);
+    return value === null ? null : decodePeerRecord(value, file);
   }
 
-  async putPeer(peer: PeerRecord): Promise<void> {
+  async putPeer(peer: PeerRecordV2): Promise<void> {
     await atomicWriteJson(this.peerFile(peer.id), peer);
   }
 
+  async listPeers(): Promise<PeerRecordV2[]> {
+    const dir = path.join(this.root, "peers");
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") return [];
+      throw error;
+    }
 
-  async listPeers(): Promise<PeerRecord[]> {
-    return listJson(path.join(this.root, "peers"));
+    const peers: PeerRecordV2[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(dir, name);
+      const value = await readJson(file);
+      if (value !== null) peers.push(decodePeerRecord(value, file));
+    }
+    return peers;
   }
 
   async removePeer(peerId: string): Promise<void> {
