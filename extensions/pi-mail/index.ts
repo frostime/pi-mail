@@ -4,6 +4,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { isOverdueDirectMail, MAILBOX_NOTICE_THRESHOLD, mailboxNoticeBucket, shouldInterruptForPeerMail } from "./attention-policy.ts";
+import type { AttentionRuntime } from "./attention-runtime.ts";
 import { HUMAN_PRINCIPAL_ID, MailService } from "./mail-service.ts";
 import {
   collapsedResultLabel,
@@ -59,6 +60,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   const runtimeId = randomUUID();
 
   let service: MailService | null = null;
+  let attentionRuntime: AttentionRuntime | null = null;
   let currentCtx: ExtensionContext | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let inboxTimer: ReturnType<typeof setInterval> | null = null;
@@ -173,6 +175,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     );
   }
 
+  // mail-attention-policy::shape — this whole flow moves behind
+  // createAttentionRuntime; index.ts must not retain attention decisions/state.
   async function processIncoming(): Promise<void> {
     if (!service || processingInbox) return;
     processingInbox = true;
@@ -218,6 +222,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    await attentionRuntime?.stop();
+    attentionRuntime = null;
     clearTimers();
     queuedMessageIds.clear();
     lastMailboxNoticeBucket = 0;
@@ -231,6 +237,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     });
     await service.init({ sessionName: pi.getSessionName() ?? null });
 
+    // mail-attention-policy::shape — construct and start AttentionRuntime here,
+    // after mailbox initialization and before any inbox polling begins.
     heartbeatTimer = setInterval(() => {
       const current = service;
       if (!current) return;
@@ -245,7 +253,13 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     setTimeout(() => void processIncoming(), 0).unref();
   });
 
+  pi.on("agent_settled", async () => {
+    await attentionRuntime?.onAgentSettled();
+  });
+
   pi.on("session_shutdown", async () => {
+    await attentionRuntime?.stop();
+    attentionRuntime = null;
     clearTimers();
     currentCtx?.ui.setStatus("pi-mail", undefined);
     if (webUi) await webUi.close().catch(() => {});
