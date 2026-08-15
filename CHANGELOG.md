@@ -14,6 +14,8 @@ Downgrading to an older Pi Mail may collapse version 2 inheritance or minute/aft
 
 ## Unreleased
 
+Fixed Pi Mail crashes after `/reload`, `/fork`, and other session replacement flows. Session-scoped resources now share one lifecycle owner, presence heartbeats no longer call stale Pi APIs, session names sync through Pi's lifecycle event, and shutdown waits for in-flight background work before removing presence.
+
 
 ## 0.6.3 - 2026-08-13
 
