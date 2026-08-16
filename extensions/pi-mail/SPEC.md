@@ -14,13 +14,17 @@ The model-facing surface is one `mail` tool. Keep its registration metadata comp
 
 ### Session lifecycle
 
-A Pi session UUID is the immutable mailbox identity. A resumed session with the same UUID reuses its mailbox. `/fork`, `/clone`, and other operations that create a new Pi session UUID create an independent Pi Mail identity through the normal `session_start` path. Pi Mail must not copy the parent mailbox, create mailbox lineage, or notify peers about session ancestry.
+A Pi session UUID is the immutable mailbox identity. A resumed session with the same UUID reuses its mailbox when one exists. `/fork`, `/clone`, and other operations that create a new Pi session UUID create an independent Pi Mail identity through the normal `session_start` path. Pi Mail must not copy the parent mailbox, create mailbox lineage, or notify peers about session ancestry.
 
 New sessions receive a generated alias in the compact `S###` form. The number is derived from the session ID, and initialization advances to the next unused generated alias when a project collision occurs. Explicitly configured aliases are mutable user-chosen addresses and are not required to be unique. Existing user-chosen aliases survive resume; legacy generated aliases such as `session-019ff5f7` and `session-<short-id>` migrate to the current `S###` form during initialization.
 
 Pi's conversation/session display name is stored separately from the mailbox alias so the human UI can show both without conflating them. New mailboxes are discoverable by default. `configure` is a partial update: omitted `alias` and `discoverable` values retain their current values. An explicit empty alias is invalid rather than meaning "leave unchanged".
 
-Session identity survives runtime shutdown, while presence does not. Normal `discover` returns only active, discoverable sessions and excludes the caller. Historical identities remain available through `include_inactive` and remain addressable while their mailbox exists. Sending to an inactive historical session is valid: delivery is persisted, and the sender-facing result must say that the recipient is inactive rather than implying live delivery.
+A newly auto-registered mailbox is provisional while its session is active, so peers may still discover and address a session that has not called the mail tool. Sending mail, receiving a durable delivery, or explicitly configuring alias, discoverability, or reminder state makes the mailbox durable. Read-only status, discovery, empty mailbox inspection, waiting, Web UI observation, and automatic Pi session-name synchronization do not.
+
+On `quit`, `new`, `resume`, or `fork`, the last active runtime removes a mailbox that is still provisional and has no deliveries. Reload only replaces the runtime and must preserve provisional state. Existing peer records without the provisional marker are durable for compatibility. A delivery created by an older sender that cannot clear the marker must be detected before cleanup and make the recipient durable.
+
+Durable session identity survives runtime shutdown, while presence does not. Normal `discover` returns only active, discoverable sessions and excludes the caller. Historical durable identities remain available through `include_inactive` and remain addressable while their mailbox exists. Sending to an inactive historical session is valid: delivery is persisted, and the sender-facing result must say that the recipient is inactive rather than implying live delivery.
 
 The reserved address `user` maps to the human principal `human-local`. It is addressable, but it is not a discoverable Pi session and does not participate in presence.
 
@@ -38,7 +42,7 @@ The mailbox namespace is project-local. For a normal Git repository, the canonic
 
 Runtime data lives under `<project>/.pi/mails/`. The module creates `.pi/mails/.gitignore` containing `*` and `!.gitignore`; it must not edit the repository root `.gitignore`.
 
-Canonical messages remain one immutable JSON file per message. Recipient delivery state is stored separately per recipient and may be updated independently. The storage design must not require multiple senders to append to or rewrite a shared JSONL or mailbox log. There is no automatic history limit or age-based deletion: silent data loss is worse than gradual local growth for this workload.
+Canonical messages remain one immutable JSON file per message. Recipient delivery state is stored separately per recipient and may be updated independently. The storage design must not require multiple senders to append to or rewrite a shared JSONL or mailbox log. There is no automatic history limit or age-based deletion of durable mailboxes: silent data loss is worse than gradual local growth for this workload. Automatic provisional-mailbox cleanup must not delete canonical messages.
 
 The human user may explicitly delete an inactive session mailbox from the Web UI. Deletion removes that session's recipient mailbox state, presence, and peer record so it disappears immediately from discovery, addressing, and Web UI recipient lists. Active sessions and the current session must be rejected. Canonical project messages are shared records and must not be erased merely because one participant mailbox is deleted; other participants' inbox/sent history and attribution must remain intact.
 

@@ -73,6 +73,25 @@ test("session shutdown disposes resources when Pi supplies a different context o
 
     await extension.emit("session_shutdown", { reason: "reload" }, shutdownCtx);
     assert.equal((await store.listPresence()).length, 0);
+    assert.equal((await store.getPeer(SESSION_ID))?.provisional, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("session exit removes a mailbox that was never meaningfully used", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-unused-lifecycle-"));
+  try {
+    const extension = extensionHarness();
+    await extension.emit("session_start", { reason: "startup" }, sessionContext(cwd));
+
+    const store = new FsMailStore(resolveMailRoot(cwd));
+    assert.equal((await store.getPeer(SESSION_ID))?.provisional, true);
+
+    await extension.emit("session_shutdown", { reason: "quit" }, sessionContext(cwd));
+
+    assert.equal(await store.getPeer(SESSION_ID), null);
+    assert.equal((await store.listPresence()).length, 0);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

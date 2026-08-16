@@ -113,6 +113,93 @@ test("new sessions receive a compact generated alias and avoid collisions", asyn
   assert.equal((await second.init()).alias, "S002");
 });
 
+test("read-only mail use leaves a new mailbox temporary until it is configured", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-temporary-"));
+  const service = new MailService({
+    cwd,
+    sessionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    runtimeId: "runtime-temporary",
+  });
+
+  await service.init();
+  await service.status();
+  await service.discover();
+  await service.waitForInbox({ timeoutMs: 0 });
+  assert.equal((await service.store.getPeer(service.sessionId))?.provisional, true);
+
+  await service.configure({ discoverable: true });
+  assert.equal(Object.hasOwn((await service.store.getPeer(service.sessionId))!, "provisional"), false);
+});
+
+test("sending mail makes both participating mailboxes durable", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-participation-"));
+  const sender = new MailService({
+    cwd,
+    sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    runtimeId: "runtime-participation-a",
+  });
+  const recipient = new MailService({
+    cwd,
+    sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    runtimeId: "runtime-participation-b",
+  });
+  await sender.init();
+  await recipient.init();
+
+  await sender.send({ to: [recipient.sessionId], body: "Retain both mailboxes." });
+
+  assert.equal(Object.hasOwn((await sender.store.getPeer(sender.sessionId))!, "provisional"), false);
+  assert.equal(Object.hasOwn((await recipient.store.getPeer(recipient.sessionId))!, "provisional"), false);
+});
+
+test("shutdown discards an unused temporary mailbox but preserves one with legacy delivery", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-temporary-close-"));
+  const unused = new MailService({
+    cwd,
+    sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    runtimeId: "runtime-unused",
+  });
+  const recipient = new MailService({
+    cwd,
+    sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    runtimeId: "runtime-legacy-recipient",
+  });
+  await unused.init();
+  await recipient.init();
+
+  const createdAt = new Date().toISOString();
+  await recipient.store.putDelivery({
+    version: 1,
+    messageId: "legacy-delivery",
+    recipientId: recipient.sessionId,
+    kind: "to",
+    deliveredAt: createdAt,
+    presentedAt: null,
+  });
+
+  await unused.close({ discardUnusedMailbox: true });
+  await recipient.close({ discardUnusedMailbox: true });
+
+  assert.equal(await unused.store.getPeer(unused.sessionId), null);
+  assert.equal(Object.hasOwn((await recipient.store.getPeer(recipient.sessionId))!, "provisional"), false);
+  assert.ok(await recipient.store.getDelivery(recipient.sessionId, "legacy-delivery"));
+});
+
+test("temporary mailbox cleanup waits for the last active runtime", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-shared-runtime-"));
+  const sessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const first = new MailService({ cwd, sessionId, runtimeId: "runtime-shared-a", presenceTtlMs: 60_000 });
+  const second = new MailService({ cwd, sessionId, runtimeId: "runtime-shared-b", presenceTtlMs: 60_000 });
+  await first.init();
+  await second.init();
+
+  await first.close({ discardUnusedMailbox: true });
+  assert.equal((await first.store.getPeer(sessionId))?.provisional, true);
+
+  await second.close({ discardUnusedMailbox: true });
+  assert.equal(await second.store.getPeer(sessionId), null);
+});
+
 test("Pi session names are tracked separately from mailbox aliases", async () => {
   const { b } = await makeServices();
   await b.syncSessionName("Review API compatibility");
@@ -608,6 +695,9 @@ test("legacy peers decode conservatively and current writes use version 2", asyn
   assert.equal(stored.version, 2);
   assert.equal(stored.reminder, "off");
   assert.equal(Object.hasOwn(stored, "reminderAfterMinutes"), false);
+
+  await service.close({ discardUnusedMailbox: true });
+  assert.ok(await service.store.getPeer(sessionId));
 });
 
 test("malformed and unknown peer versions fail with the peer path", async () => {

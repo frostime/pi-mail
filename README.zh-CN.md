@@ -118,7 +118,7 @@ sequenceDiagram
 
 普通邮件默认静默投递。收件方可以继续当前工作，在合适的时候再查看消息。Pi 会显示待处理数量，让邮件保持可见，但不会强制打断 Agent。
 
-只要收件方的 mailbox 仍然存在，即使对应 session 暂时离线，邮件也会保留下来。一个 Agent 可以先留下结论或请求，等另一个 session 恢复后再处理。
+只要收件方的 mailbox 仍然存在，即使对应 session 暂时离线，邮件也会保留下来。一个 Agent 可以先留下结论或请求，等另一个 session 恢复后再处理。从未收发邮件、也未配置邮箱的 session 会在退出时从邮箱历史中移除；运行期间仍可被其他 session 发现。
 
 ![Pi Mail 待处理收件箱](./assets/notice.jpg)
 

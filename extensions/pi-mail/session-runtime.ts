@@ -16,7 +16,7 @@ export interface MailSessionRuntime {
   syncSessionName(name: string | undefined): Promise<void>;
   openWebUi(): Promise<string>;
   closeWebUi(): Promise<boolean>;
-  dispose(): Promise<void>;
+  dispose(options?: { discardUnusedMailbox?: boolean }): Promise<void>;
 }
 
 export async function createMailSessionRuntime(options: {
@@ -104,7 +104,7 @@ export async function createMailSessionRuntime(options: {
       return true;
     },
 
-    dispose() {
+    dispose(options = {}) {
       if (disposeTask) return disposeTask;
       disposed = true;
 
@@ -121,7 +121,9 @@ export async function createMailSessionRuntime(options: {
         await handle?.close().catch((error) => {
           console.error("[pi-mail] Web UI shutdown failed:", error);
         });
-        await mailbox.close().catch((error) => {
+        await mailbox.close({
+          discardUnusedMailbox: options.discardUnusedMailbox,
+        }).catch((error) => {
           console.error("[pi-mail] mailbox shutdown failed:", error);
         });
       });

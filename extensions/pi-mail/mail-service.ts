@@ -118,6 +118,13 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function makePeerDurable(peer: PeerRecordV2): PeerRecordV2 {
+  if (peer.provisional !== true) return peer;
+  const next = { ...peer, updatedAt: nowIso() };
+  delete next.provisional;
+  return next;
+}
+
 function senderKindOf(message: MessageRecord): SenderKind {
   return message.senderKind === "human" ? "human" : "session";
 }
@@ -210,6 +217,10 @@ export class MailService {
       ? existing.alias
       : undefined;
     const peers = existingAlias ? [] : await this.store.listPeers();
+    const explicitlyConfigured = requestedAlias !== undefined || options.discoverable !== undefined;
+    const provisional = existing
+      ? existing.provisional === true && !explicitlyConfigured
+      : !explicitlyConfigured;
     const peer: PeerRecordV2 = {
       version: 2,
       id: this.sessionId,
@@ -218,6 +229,7 @@ export class MailService {
       cwd: this.cwd,
       discoverable: existing?.discoverable ?? options.discoverable ?? true,
       ...(existing && Object.hasOwn(existing, "reminder") ? { reminder: existing.reminder } : {}),
+      ...(provisional ? { provisional: true as const } : {}),
       createdAt: existing?.createdAt ?? timestamp,
       updatedAt: timestamp,
     };
@@ -252,8 +264,9 @@ export class MailService {
     });
   }
 
-  async close(): Promise<void> {
+  async close(options: { discardUnusedMailbox?: boolean } = {}): Promise<void> {
     await this.store.removePresence(this.sessionId, this.runtimeId);
+    if (options.discardUnusedMailbox) await this.discardUnusedMailbox();
   }
 
   async configure(options: { alias?: string; discoverable?: boolean } = {}): Promise<PeerRecordV2> {
@@ -264,13 +277,15 @@ export class MailService {
     return this.updateCurrentPeer((peer) => {
       const nextAlias = alias ?? peer.alias;
       const nextDiscoverable = options.discoverable ?? peer.discoverable;
-      if (nextAlias === peer.alias && nextDiscoverable === peer.discoverable) return peer;
-      return {
-        ...peer,
-        alias: nextAlias,
-        discoverable: nextDiscoverable,
-        updatedAt: nowIso(),
-      };
+      const configured = nextAlias === peer.alias && nextDiscoverable === peer.discoverable
+        ? peer
+        : {
+            ...peer,
+            alias: nextAlias,
+            discoverable: nextDiscoverable,
+            updatedAt: nowIso(),
+          };
+      return makePeerDurable(configured);
     });
   }
 
@@ -282,11 +297,11 @@ export class MailService {
 
     return this.updateCurrentPeer((peer) => {
       const current = Object.hasOwn(peer, "reminder") ? peer.reminder : undefined;
-      if (current === stored) return peer;
+      if (current === stored) return makePeerDurable(peer);
       const next: PeerRecordV2 = { ...peer, updatedAt: nowIso() };
       if (stored === undefined) delete next.reminder;
       else next.reminder = stored;
-      return next;
+      return makePeerDurable(next);
     });
   }
 
@@ -684,6 +699,11 @@ export class MailService {
     ccIds = unique(ccIds).filter((id) => !toIds.includes(id));
     if (toIds.length === 0) throw new Error("Message has no To recipients after resolution");
 
+    if (input.senderKind === "session") await this.makeMailboxDurable(input.senderId);
+    for (const recipientId of unique([...toIds, ...ccIds])) {
+      await this.makeMailboxDurable(recipientId);
+    }
+
     const createdAt = nowIso();
     let message: MessageRecord | null = null;
 
@@ -865,6 +885,43 @@ export class MailService {
       }
     }
     return output;
+  }
+
+  private async makeMailboxDurable(peerId: string): Promise<void> {
+    if (peerId === HUMAN_PRINCIPAL_ID) return;
+    if (peerId === this.sessionId) {
+      await this.updateCurrentPeer(makePeerDurable);
+      return;
+    }
+
+    const peer = await this.store.getPeer(peerId);
+    if (!peer) throw new Error(`Session mailbox "${peerId}" no longer exists`);
+    const durable = makePeerDurable(peer);
+    if (durable !== peer) await this.store.putPeer(durable);
+  }
+
+  private async discardUnusedMailbox(): Promise<void> {
+    const peer = await this.store.getPeer(this.sessionId);
+    if (peer?.provisional !== true) return;
+    if ((await this.activeSessionIds()).has(this.sessionId)) return;
+
+    // A delivery written by an older Pi Mail version also makes the mailbox
+    // durable even though that sender could not clear the provisional marker.
+    if ((await this.store.listDeliveries(this.sessionId)).length > 0) {
+      await this.makeMailboxDurable(this.sessionId);
+      return;
+    }
+
+    const latest = await this.store.getPeer(this.sessionId);
+    if (latest?.provisional !== true) return;
+    if ((await this.store.listDeliveries(this.sessionId)).length > 0) {
+      await this.makeMailboxDurable(this.sessionId);
+      return;
+    }
+
+    await this.store.removeMailbox(this.sessionId);
+    await this.store.removeSessionPresence(this.sessionId);
+    await this.store.removePeer(this.sessionId);
   }
 
   private async updateCurrentPeer(

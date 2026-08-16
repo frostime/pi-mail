@@ -18,6 +18,9 @@ Downgrading to an older Pi Mail may collapse version 2 inheritance or minute/aft
 
 ## Unreleased
 
+### Changed
+
+- New session mailboxes are now temporary until they send or receive mail or are explicitly configured. Temporary mailboxes remain discoverable while active but are removed when their session exits, preventing sessions that never meaningfully use Pi Mail from accumulating in inactive mailbox history. Read-only Mail use and reloads do not make a mailbox permanent; existing mailboxes remain permanent for compatibility.
 
 ## 0.6.3 - 2026-08-13
 

@@ -6,6 +6,8 @@ export type StoredReminderOverride = "off" | "after-turn" | number;
 export interface PeerRecordV2 extends Omit<LegacyPeerRecord, "version" | "reminderAfterMinutes"> {
   version: 2;
   reminder?: StoredReminderOverride;
+  /** New, unused mailboxes remain temporary until they gain durable value. */
+  provisional?: true;
 }
 
 export type StoredPeerRecord = LegacyPeerRecord | PeerRecordV2;
@@ -31,6 +33,9 @@ function validateIdentity(record: Record<string, unknown>, source: string): void
 function decodeCurrent(record: Record<string, unknown>, source: string): PeerRecordV2 {
   if (Object.hasOwn(record, "reminderAfterMinutes")) {
     throw new Error(`Invalid peer record at ${source}: version 2 must not contain legacy reminderAfterMinutes`);
+  }
+  if (Object.hasOwn(record, "provisional") && record.provisional !== true) {
+    throw new Error(`Invalid peer record at ${source}: provisional must be true when present`);
   }
   if (Object.hasOwn(record, "reminder")) {
     try {

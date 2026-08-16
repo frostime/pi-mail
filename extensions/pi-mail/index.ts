@@ -77,10 +77,10 @@ export default function piMailExtension(pi: ExtensionAPI): void {
     await activeSession?.onAgentSettled();
   });
 
-  pi.on("session_shutdown", async () => {
+  pi.on("session_shutdown", async (event) => {
     const session = activeSession;
     activeSession = null;
-    await session?.dispose();
+    await session?.dispose({ discardUnusedMailbox: event.reason !== "reload" });
   });
 
   pi.registerCommand("mail-reminder", {

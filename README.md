@@ -118,7 +118,7 @@ sequenceDiagram
 
 Normal mail is delivered quietly. The recipient can continue its current work and inspect the message when appropriate. Pi shows a pending count so mail is visible without forcing an interruption.
 
-Messages remain available when the receiving session is temporarily offline, provided its mailbox still exists. This allows one Agent to leave findings or requests for another session to handle after it resumes.
+Messages remain available when the receiving session is temporarily offline, provided its mailbox still exists. This allows one Agent to leave findings or requests for another session to handle after it resumes. A session that never sends or receives mail and never configures its mailbox is removed from mailbox history when it exits; it remains discoverable while active.
 
 ![Pi Mail pending inbox](./assets/notice.jpg)
 
