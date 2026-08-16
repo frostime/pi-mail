@@ -1,6 +1,6 @@
 {
   "name": "pi-mail",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Local mailbox communication for independent Pi coding sessions, with peer discovery and a human Web UI.",
   "author": "frostime",
   "license": "GPL-3.0-only",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0 - 2026-08-16
+
+### Changed
+
+- New session mailboxes are now temporary until they send or receive mail or are explicitly configured. Temporary mailboxes remain discoverable while active but are removed when their session exits, preventing sessions that never meaningfully use Pi Mail from accumulating in inactive mailbox history. Read-only Mail use and reloads do not make a mailbox permanent; existing mailboxes remain permanent for compatibility.
+
 ## 0.7.1 - 2026-08-15
 
 Fixed Pi Mail crashes after `/reload`, `/fork`, and other session replacement flows. Session-scoped resources now share one lifecycle owner, presence heartbeats no longer call stale Pi APIs, session names sync through Pi's lifecycle event, and shutdown waits for in-flight background work before removing presence.
@@ -15,12 +21,6 @@ Added user-facing `/mail-status` (read-only mailbox and inbox status: name, disc
 Peer records now write version 2 and centralize v1 compatibility decoding. Legacy positive minutes become explicit minute overrides, while absent, `null`, or zero legacy reminder state becomes explicit `off` to avoid silently enabling turns after upgrade. Version 2 records carrying the legacy field are rejected. Cross-mailbox views report inherited reminder state as unknown instead of borrowing the observer worktree's default. Bounded inbox reads now present only returned deliveries, and new `deliveredAt` values reflect recipient delivery-record creation time. Pi `>=0.80.4` is required for the settled lifecycle boundary.
 
 Downgrading to an older Pi Mail may collapse version 2 inheritance or minute/after-turn overrides to the older absent/off representation when it rewrites a peer; canonical messages and delivery records remain readable.
-
-## Unreleased
-
-### Changed
-
-- New session mailboxes are now temporary until they send or receive mail or are explicitly configured. Temporary mailboxes remain discoverable while active but are removed when their session exits, preventing sessions that never meaningfully use Pi Mail from accumulating in inactive mailbox history. Read-only Mail use and reloads do not make a mailbox permanent; existing mailboxes remain permanent for compatibility.
 
 ## 0.6.3 - 2026-08-13
 
