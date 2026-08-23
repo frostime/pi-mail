@@ -608,6 +608,29 @@ test("GC failure reports that mailbox deletion already completed", async () => {
   assert.equal(await a.store.getPeer(b.sessionId), null);
 });
 
+test("mailbox overview exposes the last mail activity time for inactive sessions", async () => {
+  const { a, b, c } = await makeServices();
+  const message = await a.send({ to: ["bob"], body: "Activity marker" });
+
+  await a.close();
+  await b.close();
+  const overview = await c.listProjectMailboxes({ includeInactive: true });
+  const alice = overview.find((peer) => peer.alias === "alice");
+  const bob = overview.find((peer) => peer.alias === "bob");
+
+  assert.ok(alice);
+  assert.ok(bob);
+  assert.ok(alice.lastMailAt);
+  assert.ok(bob.lastMailAt);
+  // Both directions point at the same exchange: sender-side message and recipient-side delivery.
+  assert.ok(Date.parse(alice.lastMailAt) >= Date.parse(message.createdAt));
+  assert.ok(Date.parse(bob.lastMailAt) >= Date.parse(message.createdAt));
+  // A session that never joined any mail exchange has no activity timestamp.
+  const carol = overview.find((peer) => peer.alias === "carol");
+  assert.ok(carol);
+  assert.equal(carol.lastMailAt, null);
+});
+
 test("a new session identity in the same project starts with an independent mailbox", async () => {
   const { cwd, a, b } = await makeServices();
   await a.send({ to: ["bob"], body: "Only Bob should receive this." });

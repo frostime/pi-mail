@@ -106,6 +106,8 @@ export interface MailboxOverview extends DiscoveredPeer {
     cc: number;
     oldestToAt: string | null;
   };
+  /** Latest mail activity involving this session: last delivered-to or sent-by time. */
+  lastMailAt: string | null;
   reminder: ReminderStatus | null;
 }
 

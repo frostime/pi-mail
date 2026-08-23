@@ -220,7 +220,7 @@
           deleteMailbox: "Delete mailbox", selectInactive: "Select inactive", selectedMailboxes: "{count} selected", deleteSelected: "Delete selected",
           deleteConfirm: "Delete mailbox for {name}? Its mailbox state will be removed. Messages still owned by other mailboxes are kept; messages with no remaining mailbox owner are deleted.",
           bulkDeleteConfirm: "Delete {count} inactive mailboxes? Their mailbox state will be removed. Messages still owned by other mailboxes are kept; messages with no remaining mailbox owner are deleted.",
-          deleteSuccess: "Deleted {mailboxes} mailbox(es); collected {messages} unreferenced message(s).", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest"
+          deleteSuccess: "Deleted {mailboxes} mailbox(es); collected {messages} unreferenced message(s).", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest", lastMail: "Last mail"
         },
         zh: {
           subtitle: "当前项目的本地邮箱监督视图。", themeAuto: "主题：自动", themeLight: "主题：亮色", themeDark: "主题：暗色",
@@ -235,7 +235,7 @@
           deleteMailbox: "删除邮箱", selectInactive: "选择全部历史邮箱", selectedMailboxes: "已选择 {count} 个", deleteSelected: "删除所选",
           deleteConfirm: "确定删除 {name} 的邮箱吗？该 session 的邮箱状态会被移除；仍由其他邮箱持有的邮件会保留，没有剩余邮箱持有者的邮件会被删除。",
           bulkDeleteConfirm: "确定删除 {count} 个历史邮箱吗？这些邮箱状态会被移除；仍由其他邮箱持有的邮件会保留，没有剩余邮箱持有者的邮件会被删除。",
-          deleteSuccess: "已删除 {mailboxes} 个邮箱，并清理 {messages} 封无引用邮件。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久"
+          deleteSuccess: "已删除 {mailboxes} 个邮箱，并清理 {messages} 封无引用邮件。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久", lastMail: "最后往来"
         }
       };
 
@@ -423,6 +423,7 @@
           if (pendingTo > 0) chips.append(element("span", "chip attention", `${t("waitingTo")}: ${pendingTo}`));
           if (pendingCc > 0) chips.append(element("span", "chip", `${t("waitingCc")}: ${pendingCc}`));
           if (peer.pending?.oldestToAt) chips.append(element("span", "chip", `${t("oldest")}: ${formatAge(peer.pending.oldestToAt)}`));
+          if (!peer.active && peer.lastMailAt) chips.append(element("span", "chip", `${t("lastMail")}: ${formatAge(peer.lastMailAt)}`));
           chips.append(element("span", "chip", peer.reminder ? reminderText(peer.reminder) : t("reminderInheritedUnknown")));
 
           card.append(

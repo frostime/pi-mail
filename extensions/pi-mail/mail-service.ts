@@ -344,6 +344,14 @@ export class MailService {
   async listProjectMailboxes(options: { includeInactive?: boolean } = {}): Promise<MailboxOverview[]> {
     const sessions = await this.listProjectSessions(options);
     const peers = await this.peerMap();
+    const sentAtBySession = new Map<string, string>();
+    for (const message of await this.store.listMessages()) {
+      if (senderKindOf(message) !== "session") continue;
+      const previous = sentAtBySession.get(message.from);
+      if (previous === undefined || message.createdAt > previous) {
+        sentAtBySession.set(message.from, message.createdAt);
+      }
+    }
     const output: MailboxOverview[] = [];
 
     for (const session of sessions) {
@@ -354,6 +362,11 @@ export class MailService {
         .map((delivery) => delivery.deliveredAt)
         .filter(Boolean)
         .sort()[0] ?? null;
+      const deliveredAt = deliveries
+        .map((delivery) => delivery.deliveredAt)
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? null;
 
       output.push({
         ...session,
@@ -362,6 +375,10 @@ export class MailService {
           cc: pending.filter((delivery) => delivery.kind === "cc").length,
           oldestToAt,
         },
+        lastMailAt: [deliveredAt, sentAtBySession.get(session.id) ?? null]
+          .filter(Boolean)
+          .sort()
+          .at(-1) ?? null,
         reminder: this.observedReminderForPeer(session.self === true, peers.get(session.id) ?? null),
       });
     }
