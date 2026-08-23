@@ -69,6 +69,7 @@
       border-radius: 9px; padding: 8px 11px; box-shadow: none;
     }
     .button:hover { border-color: var(--accent); }
+    .button:disabled { cursor: not-allowed; opacity: .55; }
     .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
     :root[data-theme="dark"] .button.primary { color: #101216; }
     .button.danger { color: var(--danger); }
@@ -89,8 +90,13 @@
     .peer.has-mail { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
     .peer-line, .message-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .peer-name, .message-subject { font-weight: 650; }
+    .peer-select { display: flex; align-items: center; min-width: 0; }
+    .peer-select input { margin: 0 8px 0 0; }
     .peer-actions { display: flex; align-items: center; gap: 8px; }
     .peer-actions .button { padding: 3px 7px; font-size: 11px; }
+    .mailbox-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .mailbox-actions .button { padding: 5px 8px; font-size: 12px; }
+    .mailbox-actions .selection-count { margin-left: auto; }
     .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; background: var(--muted); }
     .dot.active { background: var(--success); }
     .address { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -180,7 +186,14 @@
         </div>
         <div class="panel">
           <div class="panel-head"><h2 data-i18n="peers">Sessions</h2><span id="peer-count" class="muted"></span></div>
-          <div class="panel-body"><div id="peers" class="peer-list"></div></div>
+          <div class="panel-body">
+            <div id="mailbox-actions" class="mailbox-actions" hidden>
+              <button id="select-inactive" class="button" type="button" data-i18n="selectInactive">Select inactive</button>
+              <span id="mailbox-selection-count" class="muted selection-count"></span>
+              <button id="delete-selected" class="button danger" type="button" data-i18n="deleteSelected">Delete selected</button>
+            </div>
+            <div id="peers" class="peer-list"></div>
+          </div>
         </div>
       </aside>
     </div>
@@ -204,8 +217,10 @@
           sendSuccess: "Message delivered.", chooseRecipient: "Choose at least one To recipient.", sendFailed: "Send failed", loadFailed: "Failed to load mail state",
           delivered: "delivered", presented: "presented", pending: "not presented", user: "user", closeConfirm: "Close the Pi Mail Web UI server?",
           closed: "The Web UI server has been closed. You can close this tab.", current: "current", selectActive: "To: all active", clearRecipients: "Clear",
-          deleteMailbox: "Delete mailbox", deleteConfirm: "Delete mailbox for {name}? Its inbox state will be removed. Shared project messages remain available to other participants.",
-          deleteSuccess: "Mailbox deleted.", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest"
+          deleteMailbox: "Delete mailbox", selectInactive: "Select inactive", selectedMailboxes: "{count} selected", deleteSelected: "Delete selected",
+          deleteConfirm: "Delete mailbox for {name}? Its mailbox state will be removed. Messages still owned by other mailboxes are kept; messages with no remaining mailbox owner are deleted.",
+          bulkDeleteConfirm: "Delete {count} inactive mailboxes? Their mailbox state will be removed. Messages still owned by other mailboxes are kept; messages with no remaining mailbox owner are deleted.",
+          deleteSuccess: "Deleted {mailboxes} mailbox(es); collected {messages} unreferenced message(s).", deleteFailed: "Delete failed", waitingTo: "To waiting", waitingCc: "Cc waiting", oldest: "oldest"
         },
         zh: {
           subtitle: "当前项目的本地邮箱监督视图。", themeAuto: "主题：自动", themeLight: "主题：亮色", themeDark: "主题：暗色",
@@ -217,8 +232,10 @@
           sendSuccess: "邮件已投递。", chooseRecipient: "至少选择一个 To 收件人。", sendFailed: "发送失败", loadFailed: "加载邮箱状态失败",
           delivered: "已投递", presented: "已呈现", pending: "未呈现", user: "用户", closeConfirm: "确定关闭 Pi Mail Web UI 服务？",
           closed: "Web UI 服务已关闭，可以关闭此页面。", current: "当前", selectActive: "To：全部活跃", clearRecipients: "清空",
-          deleteMailbox: "删除邮箱", deleteConfirm: "确定删除 {name} 的邮箱吗？该 session 的收件箱状态会被移除；与其他参与者共享的项目邮件仍会保留。",
-          deleteSuccess: "邮箱已删除。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久"
+          deleteMailbox: "删除邮箱", selectInactive: "选择全部历史邮箱", selectedMailboxes: "已选择 {count} 个", deleteSelected: "删除所选",
+          deleteConfirm: "确定删除 {name} 的邮箱吗？该 session 的邮箱状态会被移除；仍由其他邮箱持有的邮件会保留，没有剩余邮箱持有者的邮件会被删除。",
+          bulkDeleteConfirm: "确定删除 {count} 个历史邮箱吗？这些邮箱状态会被移除；仍由其他邮箱持有的邮件会保留，没有剩余邮箱持有者的邮件会被删除。",
+          deleteSuccess: "已删除 {mailboxes} 个邮箱，并清理 {messages} 封无引用邮件。", deleteFailed: "删除失败", waitingTo: "To 待处理", waitingCc: "Cc 待处理", oldest: "最久"
         }
       };
 
@@ -231,6 +248,7 @@
       let language = localStorage.getItem("pi-mail-language") || (navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en");
       let theme = localStorage.getItem("pi-mail-theme") || "auto";
       let state = null;
+      const selectedMailboxIds = new Set();
 
       const $ = (id) => document.getElementById(id);
       const t = (key) => translations[language][key] || key;
@@ -297,15 +315,43 @@
         return `${value} · ${t(sourceKey)}`;
       }
 
-      async function deleteMailbox(peer) {
-        if (peer.active || peer.self) return;
-        if (!confirm(interpolate(t("deleteConfirm"), { name: `${peerDisplayName(peer)} · ${peerAddress(peer)}` }))) return;
+      function mailboxDeletable(peer) {
+        return !peer.active && !peer.self;
+      }
+
+      function updateMailboxActions(peers) {
+        const deletableIds = new Set(peers.filter(mailboxDeletable).map((peer) => peer.id));
+        for (const id of selectedMailboxIds) {
+          if (!deletableIds.has(id)) selectedMailboxIds.delete(id);
+        }
+
+        $("mailbox-actions").hidden = deletableIds.size === 0;
+        $("select-inactive").disabled = deletableIds.size === 0;
+        $("delete-selected").disabled = selectedMailboxIds.size === 0;
+        $("mailbox-selection-count").textContent = interpolate(t("selectedMailboxes"), { count: selectedMailboxIds.size });
+      }
+
+      async function deleteMailboxes(peers) {
+        const targets = peers.filter(mailboxDeletable);
+        if (!targets.length) return;
+        const confirmation = targets.length === 1
+          ? interpolate(t("deleteConfirm"), { name: `${peerDisplayName(targets[0])} · ${peerAddress(targets[0])}` })
+          : interpolate(t("bulkDeleteConfirm"), { count: targets.length });
+        if (!confirm(confirmation)) return;
         try {
-          await api("/api/delete-mailbox", { method: "POST", body: JSON.stringify({ session_id: peer.id }) });
+          const result = await api("/api/delete-mailboxes", {
+            method: "POST",
+            body: JSON.stringify({ session_ids: targets.map((peer) => peer.id) }),
+          });
+          selectedMailboxIds.clear();
           $("compose-notice").className = "notice success";
-          $("compose-notice").textContent = t("deleteSuccess");
+          $("compose-notice").textContent = interpolate(t("deleteSuccess"), {
+            mailboxes: result.mailboxes.length,
+            messages: result.gc.deletedCount,
+          });
           await refresh();
         } catch (error) {
+          await refresh();
           $("compose-notice").className = "notice error";
           $("compose-notice").textContent = `${t("deleteFailed")}: ${escapeText(error.message)}`;
         }
@@ -342,21 +388,33 @@
 
       function renderPeers(peers) {
         $("peer-count").textContent = String(peers.length);
+        updateMailboxActions(peers);
         if (!peers.length) { $("peers").replaceChildren(element("div", "empty", t("noPeers"))); return; }
         $("peers").replaceChildren(...peers.map((peer) => {
           const pendingTo = peer.pending?.to || 0;
           const pendingCc = peer.pending?.cc || 0;
           const card = element("div", `peer ${pendingTo + pendingCc > 0 ? "has-mail" : ""}`);
           const top = element("div", "peer-line");
-          const name = element("div", "peer-name");
+          const name = element("label", "peer-name peer-select");
+          const selection = document.createElement("input");
+          selection.type = "checkbox";
+          selection.dataset.kind = "mailbox";
+          selection.dataset.peer = peer.id;
+          selection.disabled = !mailboxDeletable(peer);
+          selection.checked = selectedMailboxIds.has(peer.id);
+          selection.addEventListener("change", () => {
+            if (selection.checked) selectedMailboxIds.add(peer.id);
+            else selectedMailboxIds.delete(peer.id);
+            updateMailboxActions(peers);
+          });
           const dot = element("span", `dot ${peer.active ? "active" : ""}`);
-          name.append(dot, document.createTextNode(`${peerDisplayName(peer)}${peer.self ? ` · ${t("current")}` : ""}`));
+          name.append(selection, dot, document.createTextNode(`${peerDisplayName(peer)}${peer.self ? ` · ${t("current")}` : ""}`));
           const actions = element("div", "peer-actions");
           actions.append(element("span", "muted", t(peer.active ? "active" : "inactive")));
           if (!peer.active && !peer.self) {
             const remove = element("button", "button danger", t("deleteMailbox"));
             remove.type = "button";
-            remove.addEventListener("click", () => void deleteMailbox(peer));
+            remove.addEventListener("click", () => void deleteMailboxes([peer]));
             actions.append(remove);
           }
           top.append(name, actions);
@@ -473,6 +531,18 @@
       });
       $("clear-recipients").addEventListener("click", () => {
         document.querySelectorAll('#recipient-grid input[type="checkbox"]').forEach((node) => { node.checked = false; });
+      });
+      $("select-inactive").addEventListener("click", () => {
+        if (!state) return;
+        for (const peer of state.peers) {
+          if (mailboxDeletable(peer)) selectedMailboxIds.add(peer.id);
+        }
+        renderPeers(state.peers);
+      });
+      $("delete-selected").addEventListener("click", () => {
+        if (!state) return;
+        const targets = state.peers.filter((peer) => selectedMailboxIds.has(peer.id));
+        void deleteMailboxes(targets);
       });
 
       $("language").addEventListener("click", () => {

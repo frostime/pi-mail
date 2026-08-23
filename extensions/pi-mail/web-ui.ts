@@ -26,6 +26,10 @@ interface DeleteMailboxRequest {
   session_id?: unknown;
 }
 
+interface DeleteMailboxesRequest {
+  session_ids?: unknown;
+}
+
 function json(response: ServerResponse, status: number, value: unknown): void {
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
@@ -79,6 +83,13 @@ function mailboxToDelete(value: unknown): string {
   const sessionId = typeof input.session_id === "string" ? input.session_id.trim() : "";
   if (!sessionId) throw new Error("session_id is required");
   return sessionId;
+}
+
+function mailboxesToDelete(value: unknown): string[] {
+  const input = (typeof value === "object" && value !== null ? value : {}) as DeleteMailboxesRequest;
+  const sessionIds = stringArray(input.session_ids);
+  if (sessionIds.length === 0) throw new Error("session_ids must contain at least one session id");
+  return sessionIds;
 }
 
 async function renderHtml(): Promise<{ html: string; nonce: string }> {
@@ -166,8 +177,16 @@ export async function startWebUi(service: MailService): Promise<WebUiHandle> {
       }
 
       if (url.pathname === "/api/delete-mailbox" && request.method === "POST") {
-        const mailbox = await service.deleteProjectMailbox(mailboxToDelete(await readJsonBody(request)));
-        json(response, 200, { mailbox });
+        const result = await service.deleteProjectMailboxes([
+          mailboxToDelete(await readJsonBody(request)),
+        ]);
+        json(response, 200, { mailbox: result.mailboxes[0], gc: result.gc });
+        return;
+      }
+
+      if (url.pathname === "/api/delete-mailboxes" && request.method === "POST") {
+        const result = await service.deleteProjectMailboxes(mailboxesToDelete(await readJsonBody(request)));
+        json(response, 200, result);
         return;
       }
 

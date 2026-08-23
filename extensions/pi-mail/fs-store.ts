@@ -210,6 +210,10 @@ export class FsMailStore {
     return listJson(path.join(this.root, "messages"));
   }
 
+  async removeMessage(messageId: string): Promise<void> {
+    await rm(this.messageFile(messageId), { force: true });
+  }
+
   async putDelivery(delivery: DeliveryRecord): Promise<void> {
     await atomicWriteJson(
       this.deliveryFile(delivery.recipientId, delivery.messageId),

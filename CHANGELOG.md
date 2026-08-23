@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Inactive session mailboxes can now be selected and deleted in one Web UI batch. Active and current-session mailboxes remain protected, and the batch is fully validated before deletion begins.
+- Explicit mailbox deletion now performs reference-based canonical message garbage collection. Messages remain while an extant session sender or recipient delivery owns them; messages with no remaining session mailbox owner are removed. Pi Mail still has no age- or size-based background history expiry.
+
 ## 0.8.0 - 2026-08-16
 
 ### Changed

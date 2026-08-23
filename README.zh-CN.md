@@ -154,7 +154,9 @@ sequenceDiagram
 /mail-ui
 ```
 
-本地 Web UI 会显示项目邮箱、活跃和离线 session、待处理消息及最近通信。用户可以阅读邮件，也可以给一个、多个或全部活跃 session 发消息。
+本地 Web UI 会显示项目邮箱、活跃和离线 session、待处理消息及最近通信。用户可以阅读邮件，也可以给一个、多个或全部活跃 session 发消息。离线邮箱支持多选后批量删除；活跃邮箱和当前 session 邮箱仍受保护，不能删除。
+
+用户显式删除邮箱后，Pi Mail 还会执行基于引用关系的邮件清理：只要 session 发件人的邮箱仍存在，或任一仍存在的收件邮箱还保留该邮件的 delivery，canonical message 就会继续保留；当已经没有任何 session mailbox 持有该邮件时，正文文件会被删除。这不是按时间或容量自动过期的 retention policy，仍被邮箱持有的邮件不会在后台自动删除。
 
 通过 Web UI 发出的消息会以真实 user message 身份进入目标 Pi session，因此可以和其他 Agent 发来的消息明确区分。
 
