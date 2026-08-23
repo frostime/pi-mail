@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-08-23
+
+### Added
+
+- Inactive mailbox cards now show when the session last sent or received mail, so historical mailboxes can be mapped back to their conversations before deletion. Sender-side and recipient-side activity both count.
+
 ### Changed
 
 - Inactive session mailboxes can now be selected and deleted in one Web UI batch. Active and current-session mailboxes remain protected, and the batch is fully validated before deletion begins.

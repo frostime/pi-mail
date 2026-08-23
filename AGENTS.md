@@ -36,3 +36,9 @@ extensions/pi-mail/
 - Mail read/write path → `mail-service.ts` → `fs-store.ts`; GC / delete semantics → `mail-service.ts::deleteProjectMailboxes`, constraints in `SPEC.md`
 - Reminder path → `reminder-settings.ts` → `attention-policy.ts` → `attention-runtime.ts`
 - Tests in `test/*.test.ts` link straight to source files by topic (extension-entry tests link to `index.ts`)
+
+
+## Version & Publish
+
+- Version: update `package.json` + `CHANGELOG.md`
+- Publish: commit with git tag; see `.github\workflows\publish.yml`
