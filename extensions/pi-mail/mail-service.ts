@@ -77,6 +77,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+// --- 别名生成 ---------------------------------------------------------------
+// Generated mailbox aliases: deterministic per session, collision-free against
+// existing peers, with legacy "session-*" forms kept for rename detection.
+
 function defaultAliasNumber(sessionId: string): number {
   const compact = sessionId.replaceAll("-", "");
   return Number.parseInt(compact.slice(-6), 16) % GENERATED_ALIAS_COUNT;
@@ -106,6 +110,9 @@ function tailDefaultAlias(sessionId: string): string {
 function isLegacyGeneratedAlias(alias: string | undefined, sessionId: string): boolean {
   return alias === legacyDefaultAlias(sessionId) || alias === tailDefaultAlias(sessionId);
 }
+
+// --- 规范化与判定 -----------------------------------------------------------
+// Input cleanup at the service boundary and small domain predicates.
 
 function normalizeSessionName(name: string | null | undefined): string | undefined {
   if (name == null) return undefined;
@@ -137,6 +144,9 @@ function makePeerDurable(peer: PeerRecordV2): PeerRecordV2 {
 function senderKindOf(message: MessageRecord): SenderKind {
   return message.senderKind === "human" ? "human" : "session";
 }
+
+// --- 边界钳制与排序 ---------------------------------------------------------
+// Query bounds and deterministic ordering shared by the read paths.
 
 function boundedLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));

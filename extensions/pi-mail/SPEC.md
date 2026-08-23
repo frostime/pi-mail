@@ -1,12 +1,18 @@
+---
+title: Pi Mail Extension Specification
+description: Maintenance contract for extensions/pi-mail — behavior, invariants, compatibility, and semantics that future implementations must preserve.
+scope:
+  - extensions/pi-mail/**
+updated: 2026-08-23
+---
+
 # Pi Mail Extension Specification
 
 This document is the maintenance contract for `extensions/pi-mail`. It records behavior and invariants that future implementations must preserve even when another design appears simpler.
 
 ## Scope and public surface
 
-Pi Mail provides communication between independent Pi sessions. It may model identities, addresses, discovery, presence, durable messages, recipient delivery state, threads, notification hints, and presentation into Pi.
-
-It must not acquire orchestration semantics such as tasks, roles, parent/child relationships, scheduling, spawning, work ownership, wait graphs, consensus, or workflow state.
+Pi Mail provides communication between independent Pi sessions. It must not acquire orchestration semantics such as tasks, roles, parent/child relationships, scheduling, spawning, work ownership, wait graphs, consensus, or workflow state.
 
 The model-facing surface is one `mail` tool. Keep its registration metadata compact. Usage policy and examples belong in the bundled `pi-mail` skill rather than `promptGuidelines` or long parameter descriptions. Tool `content` should contain only what the model needs for its next action; storage-shaped data may remain in `details` for rendering and session state.
 
@@ -16,7 +22,7 @@ The model-facing surface is one `mail` tool. Keep its registration metadata comp
 
 A Pi session UUID is the immutable mailbox identity. A resumed session with the same UUID reuses its mailbox when one exists. `/fork`, `/clone`, and other operations that create a new Pi session UUID create an independent Pi Mail identity through the normal `session_start` path. Pi Mail must not copy the parent mailbox, create mailbox lineage, or notify peers about session ancestry.
 
-New sessions receive a generated alias in the compact `S###` form. The number is derived from the session ID, and initialization advances to the next unused generated alias when a project collision occurs. Explicitly configured aliases are mutable user-chosen addresses and are not required to be unique. Existing user-chosen aliases survive resume; legacy generated aliases such as `session-019ff5f7` and `session-<short-id>` migrate to the current `S###` form during initialization.
+New sessions receive a generated alias in the compact `S###` form, skipping project collisions during initialization. Explicitly configured aliases are mutable user-chosen addresses and are not required to be unique. Existing user-chosen aliases survive resume; legacy generated aliases such as `session-019ff5f7` and `session-<short-id>` migrate to the current `S###` form during initialization.
 
 Pi's conversation/session display name is stored separately from the mailbox alias so the human UI can show both without conflating them. New mailboxes are discoverable by default. `configure` is a partial update: omitted `alias` and `discoverable` values retain their current values. An explicit empty alias is invalid rather than meaning "leave unchanged".
 
@@ -54,13 +60,13 @@ Pi Mail has no third-party runtime dependencies. Node built-ins and Pi-provided 
 
 ## Message and thread semantics
 
-A message has one sender, one or more `To` recipients, optional `Cc` recipients, a subject, body, immutable message ID, thread ID, optional parent message ID, creation time, and an optional notification hint. The same recipient must not appear in both `To` and `Cc`; `To` wins during normalization. A root message's ID is also its internal thread ID; replies preserve it. Thread IDs are storage relationships, not Agent references: Agent operations locate a thread through any message ID, so model-facing mail content must not expose a separate thread ID.
+The message shape is `MessageRecord` in `types.ts`; durable invariants beyond the shape: the same recipient must not appear in both `To` and `Cc` (`To` wins during normalization), and a root message's ID is also its internal thread ID, preserved by replies. Thread IDs are storage relationships, not Agent references: Agent operations locate a thread through any message ID, so model-facing mail content must not expose a separate thread ID.
 
 `To` and `Cc` are addressing semantics, not task semantics. Replies preserve `threadId` and set `inReplyTo`. A plain reply addresses the parent sender. `reply_all` retains the other original `To`/`Cc` participants, excludes the current sender, and deduplicates recipients. It is a snapshot of the original participants; later thread participants are not added automatically.
 
 Peer mail is non-interruptive by default. `notify: true` is an explicit sender request for immediate attention and applies only to direct `To` deliveries; `Cc` remains silent even when the message carries the flag. Records written before Pi Mail 0.4 may omit `notify`; absence means `false`. Pi Mail 0.1 records may also omit `senderKind`; absence means `session`.
 
-Human-origin Web UI mail uses sender kind `human`, the `human-local` principal, and is intentionally immediate because it represents a genuine user message rather than a peer notification hint.
+Human-origin Web UI mail uses the `human-local` principal and is intentionally immediate because it represents a genuine user message rather than a peer notification hint.
 
 ## Delivery and presentation
 
@@ -72,11 +78,11 @@ Ordinary peer mail must not inject its body into the recipient Pi context merely
 
 The adapter records urgent peer mail as presented only after the matching custom message is durable in session history. If Pi exits before that history entry exists, the delivery remains unpresented and may be retried on resume. Human-origin mail uses the user-message authority channel and is presented first when one scan contains several attention lanes.
 
-Quiet direct `To` mail is governed by one recipient-owned reminder policy: `off`, `after-turn`, or `after-minutes` from 1 through 1440. Count alone never starts a model turn; the former three-message threshold and bucket notices are removed. `off` is a clean guarantee that quiet mail cannot start a turn because of age, count, or Agent lifecycle. It does not disable urgent peer or human-origin delivery.
+Quiet direct `To` mail is governed by one recipient-owned reminder policy: `off`, `after-turn`, or `after-minutes` from 1 through 1440. Count alone never starts a model turn; there is no count- or bucket-based trigger. `off` is a clean guarantee that quiet mail cannot start a turn because of age, count, or Agent lifecycle. It does not disable urgent peer or human-origin delivery.
 
 An eligible quiet nudge is emitted only while Pi is idle, with `deliverAs: "followUp"` and `triggerTurn: true`. While Pi is busy, the runtime records only an `agent_settled` recheck and does not pre-queue a Pi message, so changing the effective policy to `off` before settlement cancels the nudge. A nudge contains the total quiet-direct pending count and inbox guidance but no mail body. It does not advance `presentedAt`.
 
-Each `pi-mail-nudge` stores `{ messageIds, pendingCount, reason }` details. `messageIds` is the oldest-first, previously unnudged cohort from one complete mailbox snapshot; `pendingCount` includes older already nudged quiet mail that remains unpresented. Accepted IDs suppress duplicate calls until matching entries become durable, and all current session entries reconstruct durable receipts on reload. New quiet mail may form a later cohort. Exactly-once behavior across concurrently active runtimes sharing one mailbox is not guaranteed.
+Nudge deduplication keys on durable custom-message entries: `messageIds` is the oldest-first, previously unnudged cohort from one complete mailbox snapshot, and accepted IDs suppress duplicate nudges until matching entries become durable (all current session entries reconstruct durable receipts on reload); `pendingCount` includes older already nudged quiet mail that remains unpresented. Exactly-once behavior across concurrently active runtimes sharing one mailbox is not guaranteed.
 
 The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count through an informational footer status such as `mail 2`. The footer and Web UI are passive indicators and must not change delivery or presentation state.
 
@@ -86,7 +92,7 @@ The effective reminder source is resolved in this order: mailbox override, trust
 
 Linked worktrees share peer records but may resolve different trusted project defaults. Therefore cross-mailbox observation never applies the current runtime's default to another inheriting mailbox: the current mailbox and explicit peer overrides expose canonical reminder status, while a non-self mailbox with no override exposes `reminder: null`. This means the observer cannot know that session's runtime-local effective policy; it is not an additional policy mode.
 
-`/mail-reminder` is read-only and reports the canonical mode and source plus concise help. `/mail-reminder off|after-turn|<1-1440>` writes a mailbox override; `/mail-reminder default` removes it. Successful changes request one Attention re-evaluation. The first mutation in a loaded session may show one settings hint when neither scope provides a valid default.
+`/mail-reminder` is read-only and reports the canonical mode and source plus concise help. `/mail-reminder off|after-turn|<1-1440>` writes a mailbox override; `/mail-reminder default` removes it. Successful changes request one Attention re-evaluation.
 
 Peer records use version 2 with optional `reminder`: absence means inherit, and `"off"`, `"after-turn"`, or an integer from 1 through 1440 are the only valid overrides. The storage boundary is the sole compatibility decoder. Legacy version 1 positive minute values become matching overrides; absent, `null`, or `0` becomes explicit `off` so upgrade cannot silently enable turns. Version 2 records containing the legacy `reminderAfterMinutes` field, malformed reminders, and unknown versions fail with an identifying error. Current writes never emit `reminderAfterMinutes`.
 
@@ -94,9 +100,9 @@ Downgrading is not guaranteed to preserve version 2 reminder state: an older Pi 
 
 ### Model-facing views
 
-`inbox` without `message_id` is a list view and must use bounded body previews. Mail previews must include the message creation timestamp so an Agent can establish message order. `inbox` with a specific `message_id` returns that received message in full and normally marks its delivery presented. Full messages must include the creation timestamp and delivery kind when available. `thread` and `sent` use bounded or summary views and must not mark deliveries presented; both must retain each message's creation timestamp. `wait` is preview-oriented and must not mark deliveries presented, but its returned previews must include creation timestamps. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
+Every model-facing message view, including Pi-injected peer and human messages, must include the message creation timestamp so an Agent can establish message order. Views expose the complete usable message ID exactly once and omit internal thread IDs; routine views use aliases without repeating session IDs, while session IDs appear only in discovery, status, or ambiguity resolution where they are actionable. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
 
-Pi-injected peer and human messages must also include the message creation timestamp so the conversational presentation preserves ordering context. Agent-facing message views expose the complete usable message ID exactly once and omit internal thread IDs. Session IDs appear in discovery, status, or ambiguity resolution where they are actionable; routine mail previews, full messages, send results, and injected peer mail use aliases without repeating session IDs.
+`presentedAt` advancement is per-view: `inbox` with a specific `message_id` normally marks its delivery presented; `inbox` list, `thread`, `sent`, and `wait` never mark deliveries presented. Full message views include the delivery kind when available.
 
 Mail sent from the Web UI must be injected through Pi's user-message API on an active recipient runtime so the authority boundary is truthful. Web UI observation is read-only with respect to delivery state.
 
@@ -112,9 +118,9 @@ A wait is always finite and abortable. The adapter default is 60 seconds and the
 
 `/mail-ui` starts an optional local Web UI backed by the same project mail store. `/mail-ui close`, Pi session shutdown, or the page's close action stops that server. Mail delivery continues while the Web UI is not running.
 
-`/mail-status` is a read-only user-facing command. It prints the current mailbox alias, session name, discoverability, active peer count, unpresented `To`/`Cc` counts, the oldest waiting direct delivery age, and the effective reminder. It never changes delivery or presentation state.
+`/mail-status` is a read-only user-facing command presenting the current mailbox and inbox status. It never changes delivery or presentation state.
 
-`/mail-rename <name>` sets the current mailbox alias through the same validation as the configure tool: 1–64 characters, no slashes or control characters. Running it without an argument reports the current alias and usage. Aliases need not be unique; the command warns when another mailbox already uses the chosen name because addressing may then require the session ID.
+`/mail-rename <name>` sets the current mailbox alias through the same validation as the configure tool. Aliases need not be unique; the command warns when another mailbox already uses the chosen name because addressing may then require the session ID.
 
 The user view may list the current session and sessions hidden from peer discovery because `discoverable` controls peer discovery, not local-user visibility. The compose view may select one, several, or all currently active sessions. “All active” expands to an explicit `To` list and does not introduce broadcast or group semantics into the mail protocol.
 
@@ -126,6 +132,6 @@ The page must remain usable in Chinese and English and support automatic, light,
 
 ## Compatibility and change rules
 
-Changes that make existing `.pi/mails` data unreadable require an explicit compatibility or migration strategy. Existing records without `senderKind` remain session-origin messages; existing records without `notify` mean `false`. Pi Mail 0.4 tombstoned peer records remain readable and filtered from listings.
+Changes that make existing `.pi/mails` data unreadable require an explicit compatibility or migration strategy. Record-shape compatibility for `senderKind`, `notify`, and 0.4 tombstones is stated in "Message and thread semantics" and "Project scope and persistence" above.
 
 Changes to project scoping, generated-alias migration, address resolution, human/peer authority mapping, `To`/`Cc` semantics, offline delivery, notification defaults, reminder policy or precedence, mailbox deletion, fork behavior, or delivery timestamp meaning are protocol or product changes. Document them here and in the changelog, and add compatibility coverage before implementation.

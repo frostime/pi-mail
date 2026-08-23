@@ -1,5 +1,20 @@
 import { MAX_REMINDER_MINUTES, MIN_REMINDER_MINUTES, parseReminderPolicy } from "./attention-policy.ts";
-import type { LegacyPeerRecord } from "./types.ts";
+
+/** Pi Mail 0.4 peer record shape; kept for decode compatibility with tombstoned records. */
+export interface LegacyPeerRecord {
+  version: 1;
+  id: string;
+  alias: string;
+  /** Pi's conversation/session display name. Independent from the mailbox alias. */
+  sessionName?: string;
+  cwd: string;
+  discoverable: boolean;
+  createdAt: string;
+  updatedAt: string;
+  reminderAfterMinutes?: number | null;
+  /** Compatibility with Pi Mail 0.4 tombstones. New deletions remove the peer record. */
+  deletedAt?: string;
+}
 
 export type StoredReminderOverride = "off" | "after-turn" | number;
 

@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 
-import type { MailService } from "./mail-service.ts";
+import type { MailService } from "../mail-service.ts";
 
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const UI_HOST = "127.0.0.1";
@@ -93,7 +93,7 @@ function mailboxesToDelete(value: unknown): string[] {
 }
 
 async function renderHtml(): Promise<{ html: string; nonce: string }> {
-  const templateUrl = new URL("./web/index.html", import.meta.url);
+  const templateUrl = new URL("./index.html", import.meta.url);
   const template = await readFile(templateUrl, "utf8");
   const nonce = randomBytes(18).toString("base64url");
   return { html: template.replaceAll("__CSP_NONCE__", nonce), nonce };

@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MailService } from "../extensions/pi-mail/mail-service.ts";
-import { startWebUi } from "../extensions/pi-mail/web-ui.ts";
+import { startWebUi } from "../extensions/pi-mail/web/server.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
 
 function authorization(url: string): { base: string; headers: Record<string, string> } {
