@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { spawn } from "node:child_process";
 
-import type { MailService } from "./mail-service.ts";
+import type { MailService } from "../mail-service.ts";
 
 const MAX_REQUEST_BODY_BYTES = 256 * 1024;
 const UI_HOST = "127.0.0.1";
@@ -24,6 +24,10 @@ interface ComposeRequest {
 
 interface DeleteMailboxRequest {
   session_id?: unknown;
+}
+
+interface DeleteMailboxesRequest {
+  session_ids?: unknown;
 }
 
 function json(response: ServerResponse, status: number, value: unknown): void {
@@ -81,8 +85,15 @@ function mailboxToDelete(value: unknown): string {
   return sessionId;
 }
 
+function mailboxesToDelete(value: unknown): string[] {
+  const input = (typeof value === "object" && value !== null ? value : {}) as DeleteMailboxesRequest;
+  const sessionIds = stringArray(input.session_ids);
+  if (sessionIds.length === 0) throw new Error("session_ids must contain at least one session id");
+  return sessionIds;
+}
+
 async function renderHtml(): Promise<{ html: string; nonce: string }> {
-  const templateUrl = new URL("./web/index.html", import.meta.url);
+  const templateUrl = new URL("./index.html", import.meta.url);
   const template = await readFile(templateUrl, "utf8");
   const nonce = randomBytes(18).toString("base64url");
   return { html: template.replaceAll("__CSP_NONCE__", nonce), nonce };
@@ -166,8 +177,16 @@ export async function startWebUi(service: MailService): Promise<WebUiHandle> {
       }
 
       if (url.pathname === "/api/delete-mailbox" && request.method === "POST") {
-        const mailbox = await service.deleteProjectMailbox(mailboxToDelete(await readJsonBody(request)));
-        json(response, 200, { mailbox });
+        const result = await service.deleteProjectMailboxes([
+          mailboxToDelete(await readJsonBody(request)),
+        ]);
+        json(response, 200, { mailbox: result.mailboxes[0], gc: result.gc });
+        return;
+      }
+
+      if (url.pathname === "/api/delete-mailboxes" && request.method === "POST") {
+        const result = await service.deleteProjectMailboxes(mailboxesToDelete(await readJsonBody(request)));
+        json(response, 200, result);
         return;
       }
 

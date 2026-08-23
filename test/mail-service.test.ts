@@ -456,7 +456,7 @@ test("human-origin mail can be answered through the reserved user address", asyn
   assert.equal(reply.threadId, humanMessage.threadId);
 });
 
-test("human supervisor can delete only inactive mailboxes without erasing shared messages", async () => {
+test("deleting a recipient mailbox preserves mail still owned by the sender", async () => {
   const { cwd, a, b } = await makeServices();
   const message = await a.send({ to: ["bob"], subject: "Keep shared", body: "Shared history" });
 
@@ -473,6 +473,162 @@ test("human supervisor can delete only inactive mailboxes without erasing shared
   await resumed.init();
   assert.equal((await inbox(resumed)).length, 0);
   assert.ok((await a.discover()).some((peer) => peer.id === b.sessionId));
+});
+
+test("deleting a sender mailbox preserves mail still owned by a recipient", async () => {
+  const { a, b, c } = await makeServices();
+  const message = await a.send({ to: ["bob"], body: "Recipient still owns this." });
+
+  await a.close();
+  const result = await c.deleteProjectMailboxes([a.sessionId]);
+
+  assert.equal(result.gc.deletedCount, 0);
+  assert.ok(await c.store.getMessage(message.id));
+  assert.equal((await inbox(b))[0].id, message.id);
+});
+
+test("deleting every owning mailbox garbage-collects the canonical message", async () => {
+  const { a, b, c } = await makeServices();
+  const message = await a.send({ to: ["bob"], body: "No owner remains." });
+
+  await a.close();
+  await b.close();
+  const result = await c.deleteProjectMailboxes([a.sessionId, b.sessionId]);
+
+  assert.deepEqual(result.mailboxes.map((mailbox) => mailbox.alias), ["alice", "bob"]);
+  assert.equal(result.gc.deletedCount, 1);
+  assert.equal(await c.store.getMessage(message.id), null);
+});
+
+test("To/Cc fan-out keeps a message until the last owning mailbox is deleted", async () => {
+  const { cwd, a, b, c } = await makeServices();
+  const message = await a.send({ to: ["bob"], cc: ["carol"], body: "Shared fan-out." });
+  const supervisor = new MailService({
+    cwd,
+    sessionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    runtimeId: "runtime-supervisor",
+    presenceTtlMs: 60_000,
+  });
+  await supervisor.init({ alias: "dana" });
+
+  await a.close();
+  await b.close();
+  const first = await supervisor.deleteProjectMailboxes([a.sessionId, b.sessionId]);
+  assert.equal(first.gc.deletedCount, 0);
+  assert.ok(await supervisor.store.getMessage(message.id));
+
+  await c.close();
+  const last = await supervisor.deleteProjectMailboxes([c.sessionId]);
+  assert.equal(last.gc.deletedCount, 1);
+  assert.equal(await supervisor.store.getMessage(message.id), null);
+});
+
+test("human-origin mail is collected after its last session recipient is deleted", async () => {
+  const { a, b } = await makeServices();
+  const message = await a.sendAsHuman({ to: ["bob"], body: "Human-owned only through Bob." });
+
+  await b.close();
+  const result = await a.deleteProjectMailboxes([b.sessionId]);
+
+  assert.equal(result.gc.deletedCount, 1);
+  assert.equal(await a.store.getMessage(message.id), null);
+});
+
+test("human-origin mail survives while any session recipient mailbox remains", async () => {
+  const { a, b, c } = await makeServices();
+  const message = await a.sendAsHuman({ to: ["bob", "carol"], body: "Carol still owns this." });
+
+  await b.close();
+  const result = await a.deleteProjectMailboxes([b.sessionId]);
+
+  assert.equal(result.gc.deletedCount, 0);
+  assert.ok(await a.store.getMessage(message.id));
+  assert.equal((await inbox(c))[0].id, message.id);
+});
+
+test("tombstoned peers are not message GC roots", async () => {
+  const { a, b } = await makeServices();
+  const peer = await a.store.getPeer(b.sessionId);
+  assert.ok(peer);
+  await a.store.putPeer({ ...peer, deletedAt: new Date().toISOString() });
+  await a.store.removeMailbox(b.sessionId);
+
+  const createdAt = new Date().toISOString();
+  assert.equal(await a.store.tryCreateMessage({
+    version: 1,
+    id: "legacy1",
+    senderKind: "session",
+    from: b.sessionId,
+    fromAlias: peer.alias,
+    to: [],
+    cc: [],
+    subject: "Legacy orphan",
+    body: "Tombstone must not retain this.",
+    threadId: "legacy1",
+    inReplyTo: null,
+    createdAt,
+  }), true);
+
+  const result = await a.collectUnreferencedMessages();
+  assert.equal(result.deletedCount, 1);
+  assert.equal(await a.store.getMessage("legacy1"), null);
+});
+
+test("batch mailbox deletion validates all targets before mutation", async () => {
+  const { a, b, c } = await makeServices();
+  await b.close();
+
+  await assert.rejects(
+    () => a.deleteProjectMailboxes([b.sessionId, c.sessionId]),
+    /active session mailbox/,
+  );
+  assert.ok(await a.store.getPeer(b.sessionId));
+  assert.ok(await a.store.getPeer(c.sessionId));
+});
+
+test("batch mailbox deletion deduplicates session IDs", async () => {
+  const { a, b } = await makeServices();
+  await b.close();
+
+  const result = await a.deleteProjectMailboxes([b.sessionId, b.sessionId]);
+  assert.equal(result.mailboxes.length, 1);
+  assert.equal(result.mailboxes[0].id, b.sessionId);
+});
+
+test("GC failure reports that mailbox deletion already completed", async () => {
+  const { a, b } = await makeServices();
+  await a.sendAsHuman({ to: ["bob"], body: "This message needs GC." });
+  await b.close();
+
+  a.store.removeMessage = async () => { throw new Error("simulated remove failure"); };
+  await assert.rejects(
+    () => a.deleteProjectMailboxes([b.sessionId]),
+    /Mailboxes deleted, but message cleanup failed: simulated remove failure/,
+  );
+  assert.equal(await a.store.getPeer(b.sessionId), null);
+});
+
+test("mailbox overview exposes the last mail activity time for inactive sessions", async () => {
+  const { a, b, c } = await makeServices();
+  const message = await a.send({ to: ["bob"], body: "Activity marker" });
+
+  await a.close();
+  await b.close();
+  const overview = await c.listProjectMailboxes({ includeInactive: true });
+  const alice = overview.find((peer) => peer.alias === "alice");
+  const bob = overview.find((peer) => peer.alias === "bob");
+
+  assert.ok(alice);
+  assert.ok(bob);
+  assert.ok(alice.lastMailAt);
+  assert.ok(bob.lastMailAt);
+  // Both directions point at the same exchange: sender-side message and recipient-side delivery.
+  assert.ok(Date.parse(alice.lastMailAt) >= Date.parse(message.createdAt));
+  assert.ok(Date.parse(bob.lastMailAt) >= Date.parse(message.createdAt));
+  // A session that never joined any mail exchange has no activity timestamp.
+  const carol = overview.find((peer) => peer.alias === "carol");
+  assert.ok(carol);
+  assert.equal(carol.lastMailAt, null);
 });
 
 test("a new session identity in the same project starts with an independent mailbox", async () => {

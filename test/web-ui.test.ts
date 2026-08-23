@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { MailService } from "../extensions/pi-mail/mail-service.ts";
-import { startWebUi } from "../extensions/pi-mail/web-ui.ts";
+import { startWebUi } from "../extensions/pi-mail/web/server.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
 
 function authorization(url: string): { base: string; headers: Record<string, string> } {
@@ -34,6 +34,8 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     assert.match(html, /To: all active/);
     assert.match(html, /Delete mailbox/);
     assert.match(html, /删除邮箱/);
+    assert.match(html, /Select inactive/);
+    assert.match(html, /删除所选/);
     assert.match(html, /Quiet reminder/);
     assert.match(html, /静默提醒/);
     assert.match(html, /project default/);
@@ -72,16 +74,42 @@ test("Web UI serves bilingual HTML and token-protected APIs", async () => {
     const afterSend = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string; pending: { to: number; cc: number } }> };
     assert.equal(afterSend.peers.find((peer) => peer.id === b.sessionId)?.pending.to, 1);
 
-    await b.close();
-    const deleteResponse = await fetch(`${base}/api/delete-mailbox`, {
+    const c = new MailService({ cwd, sessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", runtimeId: "runtime-c" });
+    await c.init({ alias: "carol" });
+    const cOnlyResponse = await fetch(`${base}/api/send`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ session_id: b.sessionId }),
+      body: JSON.stringify({ to: [c.sessionId], cc: [], subject: "Disposable", body: "Only Carol owns this." }),
+    });
+    assert.equal(cOnlyResponse.status, 201);
+    await b.close();
+    await c.close();
+    const deleteResponse = await fetch(`${base}/api/delete-mailboxes`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_ids: [b.sessionId, c.sessionId] }),
     });
     assert.equal(deleteResponse.status, 200);
+    const deleteResult = await deleteResponse.json() as { mailboxes: Array<{ id: string }>; gc: { deletedCount: number } };
+    assert.deepEqual(deleteResult.mailboxes.map((mailbox) => mailbox.id), [b.sessionId, c.sessionId]);
+    assert.equal(deleteResult.gc.deletedCount, 1);
 
     const afterDelete = await fetch(`${base}/api/state`, { headers }).then((response) => response.json()) as { peers: Array<{ id: string }> };
     assert.equal(afterDelete.peers.some((peer) => peer.id === b.sessionId), false);
+    assert.equal(afterDelete.peers.some((peer) => peer.id === c.sessionId), false);
+
+    const d = new MailService({ cwd, sessionId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", runtimeId: "runtime-d" });
+    await d.init({ alias: "dana" });
+    await d.close();
+    const legacyDelete = await fetch(`${base}/api/delete-mailbox`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ session_id: d.sessionId }),
+    });
+    assert.equal(legacyDelete.status, 200);
+    const legacyResult = await legacyDelete.json() as { mailbox: { id: string }; gc: { deletedCount: number } };
+    assert.equal(legacyResult.mailbox.id, d.sessionId);
+    assert.equal(legacyResult.gc.deletedCount, 0);
 
     const closeResponse = await fetch(`${base}/api/close`, {
       method: "POST",

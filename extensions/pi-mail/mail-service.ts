@@ -64,9 +64,22 @@ export interface SendMailInput {
   replyAll?: boolean;
 }
 
+export interface MessageGcResult {
+  deletedCount: number;
+}
+
+export interface DeleteProjectMailboxesResult {
+  mailboxes: PeerAddress[];
+  gc: MessageGcResult;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
+
+// --- 别名生成 ---------------------------------------------------------------
+// Generated mailbox aliases: deterministic per session, collision-free against
+// existing peers, with legacy "session-*" forms kept for rename detection.
 
 function defaultAliasNumber(sessionId: string): number {
   const compact = sessionId.replaceAll("-", "");
@@ -98,6 +111,9 @@ function isLegacyGeneratedAlias(alias: string | undefined, sessionId: string): b
   return alias === legacyDefaultAlias(sessionId) || alias === tailDefaultAlias(sessionId);
 }
 
+// --- 规范化与判定 -----------------------------------------------------------
+// Input cleanup at the service boundary and small domain predicates.
+
 function normalizeSessionName(name: string | null | undefined): string | undefined {
   if (name == null) return undefined;
   const value = String(name).trim();
@@ -128,6 +144,9 @@ function makePeerDurable(peer: PeerRecordV2): PeerRecordV2 {
 function senderKindOf(message: MessageRecord): SenderKind {
   return message.senderKind === "human" ? "human" : "session";
 }
+
+// --- 边界钳制与排序 ---------------------------------------------------------
+// Query bounds and deterministic ordering shared by the read paths.
 
 function boundedLimit(limit: number | undefined): number {
   return Math.max(1, Math.min(Number(limit) || DEFAULT_LIMIT, 100));
@@ -335,6 +354,14 @@ export class MailService {
   async listProjectMailboxes(options: { includeInactive?: boolean } = {}): Promise<MailboxOverview[]> {
     const sessions = await this.listProjectSessions(options);
     const peers = await this.peerMap();
+    const sentAtBySession = new Map<string, string>();
+    for (const message of await this.store.listMessages()) {
+      if (senderKindOf(message) !== "session") continue;
+      const previous = sentAtBySession.get(message.from);
+      if (previous === undefined || message.createdAt > previous) {
+        sentAtBySession.set(message.from, message.createdAt);
+      }
+    }
     const output: MailboxOverview[] = [];
 
     for (const session of sessions) {
@@ -345,6 +372,11 @@ export class MailService {
         .map((delivery) => delivery.deliveredAt)
         .filter(Boolean)
         .sort()[0] ?? null;
+      const deliveredAt = deliveries
+        .map((delivery) => delivery.deliveredAt)
+        .filter(Boolean)
+        .sort()
+        .at(-1) ?? null;
 
       output.push({
         ...session,
@@ -353,6 +385,10 @@ export class MailService {
           cc: pending.filter((delivery) => delivery.kind === "cc").length,
           oldestToAt,
         },
+        lastMailAt: [deliveredAt, sentAtBySession.get(session.id) ?? null]
+          .filter(Boolean)
+          .sort()
+          .at(-1) ?? null,
         reminder: this.observedReminderForPeer(session.self === true, peers.get(session.id) ?? null),
       });
     }
@@ -440,20 +476,80 @@ export class MailService {
 
   async deleteProjectMailbox(address: string): Promise<PeerAddress> {
     const peerId = await this.resolveOne(address);
-    if (peerId === HUMAN_PRINCIPAL_ID) throw new Error("The human principal has no deletable session mailbox");
-    if (peerId === this.sessionId) throw new Error("Cannot delete the mailbox of the current active session");
+    const result = await this.deleteProjectMailboxes([peerId]);
+    return result.mailboxes[0];
+  }
 
-    const active = await this.activeSessionIds();
-    if (active.has(peerId)) throw new Error("Cannot delete an active session mailbox");
+  async deleteProjectMailboxes(sessionIds: string[]): Promise<DeleteProjectMailboxesResult> {
+    const ids = unique(sessionIds);
+    if (ids.length === 0) throw new Error("At least one session mailbox is required");
+    if (ids.includes(HUMAN_PRINCIPAL_ID)) {
+      throw new Error("The human principal has no deletable session mailbox");
+    }
+    if (ids.includes(this.sessionId)) {
+      throw new Error("Cannot delete the mailbox of the current active session");
+    }
 
-    const peer = await this.store.getPeer(peerId);
-    if (!peer || peer.deletedAt) throw new Error(`Unknown session mailbox "${address}"`);
+    const [active, peers] = await Promise.all([
+      this.activeSessionIds(),
+      this.store.listPeers(),
+    ]);
+    const peerById = new Map(peers.map((peer) => [peer.id, peer]));
+    const targets: PeerRecordV2[] = [];
 
-    await this.store.removeMailbox(peerId);
-    await this.store.removeSessionPresence(peerId);
-    await this.store.removePeer(peerId);
+    for (const id of ids) {
+      if (active.has(id)) throw new Error(`Cannot delete active session mailbox "${id}"`);
+      const peer = peerById.get(id);
+      if (!peer || peer.deletedAt) throw new Error(`Unknown session mailbox "${id}"`);
+      targets.push(peer);
+    }
 
-    return { id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias };
+    const deleted: PeerAddress[] = [];
+    for (const peer of targets) {
+      await this.store.removeMailbox(peer.id);
+      await this.store.removeSessionPresence(peer.id);
+      await this.store.removePeer(peer.id);
+      deleted.push({ id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias });
+    }
+
+    try {
+      return { mailboxes: deleted, gc: await this.collectUnreferencedMessages() };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`Mailboxes deleted, but message cleanup failed: ${reason}`);
+    }
+  }
+
+  async collectUnreferencedMessages(): Promise<MessageGcResult> {
+    const [peers, messages] = await Promise.all([
+      this.store.listPeers(),
+      this.store.listMessages(),
+    ]);
+    const extantPeerIds = new Set(
+      peers.filter((peer) => !peer.deletedAt).map((peer) => peer.id),
+    );
+    const referencedMessageIds = new Set<string>();
+
+    for (const message of messages) {
+      if (senderKindOf(message) === "session" && extantPeerIds.has(message.from)) {
+        referencedMessageIds.add(message.id);
+      }
+    }
+
+    for (const peerId of extantPeerIds) {
+      for (const messageId of await this.store.listDeliveryIds(peerId)) {
+        referencedMessageIds.add(messageId);
+      }
+    }
+
+    let deletedCount = 0;
+    for (const message of messages) {
+      if (referencedMessageIds.has(message.id)) continue;
+      await this.store.removeMessage(message.id);
+      deletedCount += 1;
+    }
+
+    return { deletedCount };
   }
 
   async listUnpresentedForAttention(): Promise<MailMessage[]> {

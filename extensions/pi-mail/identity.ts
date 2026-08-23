@@ -1,5 +1,10 @@
 import { randomInt } from "node:crypto";
 
+/**
+ * Id string syntax: generation, shortening, and fragment matching for session
+ * and message identifiers. Identity archives (alias, sessionName, durable
+ * state) live in peer-record.ts.
+ */
 export const SESSION_ID_FRAGMENT_MIN_LENGTH = 6;
 export const SESSION_SHORT_ID_LENGTH = 12;
 export const LEGACY_MESSAGE_REF_MIN_LENGTH = 6;

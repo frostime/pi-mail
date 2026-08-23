@@ -1,33 +1,14 @@
 import type { ReminderStatus } from "./attention-policy.ts";
 
+// Peer record shapes live with their migration/validation logic in peer-record.ts.
+export type { LegacyPeerRecord } from "./peer-record.ts";
+
+// ---------------------------------------------------------------------------
+// Mail message model: canonical records, recipient deliveries, view shapes.
+// ---------------------------------------------------------------------------
+
 export type RecipientKind = "to" | "cc";
 export type SenderKind = "session" | "human";
-export type WaitReason = "pending" | "new" | "timeout";
-
-export interface LegacyPeerRecord {
-  version: 1;
-  id: string;
-  alias: string;
-  /** Pi's conversation/session display name. Independent from the mailbox alias. */
-  sessionName?: string;
-  cwd: string;
-  discoverable: boolean;
-  createdAt: string;
-  updatedAt: string;
-  reminderAfterMinutes?: number | null;
-  /** Compatibility with Pi Mail 0.4 tombstones. New deletions remove the peer record. */
-  deletedAt?: string;
-}
-
-export interface PresenceRecord {
-  version: 1;
-  sessionId: string;
-  runtimeId: string;
-  pid: number;
-  cwd: string;
-  startedAt: string;
-  lastSeenAt: string;
-}
 
 export interface MessageRecord {
   version: 1;
@@ -56,12 +37,6 @@ export interface DeliveryRecord {
   presentedAt: string | null;
 }
 
-export interface PeerAddress {
-  id: string;
-  shortId: string;
-  alias: string;
-}
-
 export interface MailMessage {
   id: string;
   senderKind: SenderKind;
@@ -77,16 +52,25 @@ export interface MailMessage {
   delivery?: Pick<DeliveryRecord, "kind" | "deliveredAt" | "presentedAt">;
 }
 
-export interface MailStatus {
+// ---------------------------------------------------------------------------
+// Identity and discovery: who is present in the project and how their
+// mailboxes appear to others.
+// ---------------------------------------------------------------------------
+
+export interface PresenceRecord {
+  version: 1;
+  sessionId: string;
+  runtimeId: string;
+  pid: number;
+  cwd: string;
+  startedAt: string;
+  lastSeenAt: string;
+}
+
+export interface PeerAddress {
   id: string;
   shortId: string;
   alias: string;
-  sessionName: string | null;
-  discoverable: boolean;
-  reminder: ReminderStatus;
-  mailRoot: string;
-  unpresented: { to: number; cc: number };
-  activePeerCount: number;
 }
 
 export interface DiscoveredPeer extends PeerAddress {
@@ -99,14 +83,33 @@ export interface DiscoveredPeer extends PeerAddress {
   self?: boolean;
 }
 
-
 export interface MailboxOverview extends DiscoveredPeer {
   pending: {
     to: number;
     cc: number;
     oldestToAt: string | null;
   };
+  /** Latest mail activity involving this session: last delivered-to or sent-by time. */
+  lastMailAt: string | null;
   reminder: ReminderStatus | null;
+}
+
+// ---------------------------------------------------------------------------
+// Query results: status, sent/thread views, and wait outcomes.
+// ---------------------------------------------------------------------------
+
+export type WaitReason = "pending" | "new" | "timeout";
+
+export interface MailStatus {
+  id: string;
+  shortId: string;
+  alias: string;
+  sessionName: string | null;
+  discoverable: boolean;
+  reminder: ReminderStatus;
+  mailRoot: string;
+  unpresented: { to: number; cc: number };
+  activePeerCount: number;
 }
 
 export interface SentRecipient extends PeerAddress {

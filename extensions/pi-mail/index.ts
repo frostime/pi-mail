@@ -16,7 +16,7 @@ import {
   type MailToolArgs,
   type SendToolDetails,
 } from "./tool-presentation.ts";
-import { openWebUiInBrowser } from "./web-ui.ts";
+import { openWebUiInBrowser } from "./web/server.ts";
 
 const ACTION = Type.Union([
   Type.Literal("status"),

@@ -6,7 +6,7 @@ import { createAttentionRuntime } from "./attention-runtime.ts";
 import { MailService } from "./mail-service.ts";
 import { createPresenceRuntime } from "./presence-runtime.ts";
 import { loadReminderSettings } from "./reminder-settings.ts";
-import { startWebUi } from "./web-ui.ts";
+import { startWebUi } from "./web/server.ts";
 
 export interface MailSessionRuntime {
   readonly mailbox: MailService;

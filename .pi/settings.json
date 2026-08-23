@@ -1,0 +1,14 @@
+{
+  "packages": [
+    {
+      "source": "npm:pi-mail",
+      "autoload": false,
+      "extensions": [
+        "-extensions\\pi-mail\\index.ts"
+      ],
+      "skills": [
+        "-skills\\pi-mail\\SKILL.md"
+      ]
+    }
+  ]
+}

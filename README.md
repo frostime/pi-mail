@@ -154,7 +154,9 @@ Run this in Pi:
 /mail-ui
 ```
 
-The local Web UI shows project mailboxes, active and inactive sessions, pending messages, and recent communication. Users can read mail and compose a message to one session, several sessions, or all active sessions.
+The local Web UI shows project mailboxes, active and inactive sessions, pending messages, and recent communication. Users can read mail and compose a message to one session, several sessions, or all active sessions. Inactive mailboxes can be selected and deleted in one batch; active and current-session mailboxes remain protected.
+
+Explicit mailbox deletion also runs reference-based message cleanup. A canonical message remains while its session sender mailbox still exists or any surviving recipient mailbox still has its delivery. Once no session mailbox owns the message, it is removed. This is not a time- or size-based retention policy: Pi Mail does not expire otherwise-owned mail in the background.
 
 Messages composed in the Web UI enter the target Pi session as genuine user messages. This distinguishes user instructions from messages sent by another Agent.
 
