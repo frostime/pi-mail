@@ -46,7 +46,7 @@ Ambiguous legacy message or session ID fragments fail and list candidates. Expli
 
 The mailbox namespace is project-local. For a normal Git repository, the canonical project root is the parent of Git's shared common directory, so the main checkout and linked worktrees share one `.pi/mails/` store. Non-Git directories use the current working directory as their scope. Unusual Git layouts must prefer isolation over guessing a broader shared namespace.
 
-Runtime data lives under `<project>/.pi/mails/`. The module creates `.pi/mails/.gitignore` containing `*` and `!.gitignore`; it must not edit the repository root `.gitignore`.
+Runtime data lives under `<project>/.pi/mails/`. The module creates `.pi/mails/.gitignore` containing `*`, which ignores the whole directory including that rule file. It must not edit the repository root `.gitignore`.
 
 Canonical messages remain one immutable JSON file per message. Recipient delivery state is stored separately per recipient and may be updated independently. The storage design must not require multiple senders to append to or rewrite a shared JSONL or mailbox log. Pi Mail has no age- or size-based history cap. Automatic provisional-mailbox cleanup must not delete canonical messages because that lifecycle path is only for mailboxes that never gained durable mail value.
 

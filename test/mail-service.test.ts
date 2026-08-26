@@ -43,10 +43,10 @@ async function inbox(service: MailService): Promise<MailMessage[]> {
   return await service.listInbox({ markPresented: false }) as MailMessage[];
 }
 
-test("initialization creates a self-contained mails .gitignore", async () => {
+test("initialization makes the entire mails directory ignored", async () => {
   const { a } = await makeServices();
   const text = await readFile(path.join(a.root, ".gitignore"), "utf8");
-  assert.equal(text, "# Pi Mail runtime data\n*\n!.gitignore\n");
+  assert.equal(text, "# Pi Mail runtime data\n*\n");
 });
 
 test("discovery is active-only by default but preserves historical peers", async () => {

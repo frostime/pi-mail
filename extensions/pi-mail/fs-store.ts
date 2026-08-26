@@ -98,7 +98,7 @@ export class FsMailStore {
 
     const ignoreFile = path.join(this.root, ".gitignore");
     try {
-      await writeFile(ignoreFile, "# Pi Mail runtime data\n*\n!.gitignore\n", {
+      await writeFile(ignoreFile, "# Pi Mail runtime data\n*\n", {
         encoding: "utf8",
         flag: "wx",
         mode: 0o644,

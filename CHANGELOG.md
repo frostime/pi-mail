@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-08-27
+
+### Changed
+
+- Newly created Pi Mail stores now ignore the entire `.pi/mails/` directory, including the generated `.gitignore` file. Existing stores retain their current rules.
+
 ## 0.9.0 - 2026-08-23
 
 ### Added
