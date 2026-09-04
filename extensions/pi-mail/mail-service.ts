@@ -285,7 +285,10 @@ export class MailService {
 
   async close(options: { discardUnusedMailbox?: boolean } = {}): Promise<void> {
     await this.store.removePresence(this.sessionId, this.runtimeId);
-    if (options.discardUnusedMailbox) await this.discardUnusedMailbox();
+    if (options.discardUnusedMailbox) {
+      await this.discardUnusedMailbox();
+      await this.store.removeIfEmpty();
+    }
   }
 
   async configure(options: { alias?: string; discoverable?: boolean } = {}): Promise<PeerRecordV2> {
@@ -1015,9 +1018,11 @@ export class MailService {
       return;
     }
 
-    await this.store.removeMailbox(this.sessionId);
-    await this.store.removeSessionPresence(this.sessionId);
-    await this.store.removePeer(this.sessionId);
+    if (!await this.store.removeMailboxIfEmpty(this.sessionId)) return;
+    if (!await this.store.removeSessionPresenceIfEmpty(this.sessionId)) return;
+
+    const removable = await this.store.getPeer(this.sessionId);
+    if (removable?.provisional === true) await this.store.removePeer(this.sessionId);
   }
 
   private async updateCurrentPeer(

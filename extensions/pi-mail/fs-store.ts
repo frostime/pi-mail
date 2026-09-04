@@ -18,6 +18,13 @@ import type {
 } from "./types.ts";
 
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+const STORE_DIRECTORIES = ["peers", "presence", "messages", "mailboxes"] as const;
+const STORE_IGNORE_CONTENT = "# Pi Mail runtime data\n*\n";
+const MANAGED_IGNORE_CONTENTS = new Set([
+  STORE_IGNORE_CONTENT,
+  "# Pi Mail runtime data\n*\n!.gitignore\n",
+  "# Pi Mail runtime data\n*\n.gitignore\n",
+]);
 
 function errorCode(error: unknown): string | undefined {
   return typeof error === "object" && error !== null && "code" in error
@@ -92,20 +99,56 @@ export class FsMailStore {
   }
 
   async init(): Promise<void> {
-    for (const dir of ["peers", "presence", "messages", "mailboxes"]) {
+    for (const dir of STORE_DIRECTORIES) {
       await mkdir(path.join(this.root, dir), { recursive: true });
     }
+    await this.ensureIgnoreFile();
+  }
+
+  /** Remove a store that contains no mail data, without recursively deleting anything. */
+  async removeIfEmpty(): Promise<boolean> {
+    for (const dir of STORE_DIRECTORIES) {
+      if (!await this.removeDirectoryIfEmpty(path.join(this.root, dir))) return false;
+    }
+
+    let entries: string[];
+    try {
+      entries = await readdir(this.root);
+    } catch (error) {
+      if (errorCode(error) !== "ENOENT") return false;
+      await this.removeEmptyPiParent();
+      return true;
+    }
+
+    if (entries.some((entry) => entry !== ".gitignore")) return false;
 
     const ignoreFile = path.join(this.root, ".gitignore");
-    try {
-      await writeFile(ignoreFile, "# Pi Mail runtime data\n*\n", {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o644,
-      });
-    } catch (error) {
-      if (errorCode(error) !== "EEXIST") throw error;
+    if (entries.includes(".gitignore")) {
+      let content: string;
+      try {
+        content = await readFile(ignoreFile, "utf8");
+      } catch {
+        return false;
+      }
+      if (!MANAGED_IGNORE_CONTENTS.has(content)) return false;
+
+      try {
+        await rm(ignoreFile);
+      } catch {
+        return false;
+      }
     }
+
+    try {
+      await rmdir(this.root);
+    } catch {
+      // Another runtime may have populated the store after the emptiness check.
+      await this.ensureIgnoreFile().catch(() => {});
+      return false;
+    }
+
+    await this.removeEmptyPiParent();
+    return true;
   }
 
   async getPeer(peerId: string): Promise<PeerRecordV2 | null> {
@@ -251,6 +294,16 @@ export class FsMailStore {
     await rm(path.join(this.root, "mailboxes", recipientId), { recursive: true, force: true });
   }
 
+  async removeMailboxIfEmpty(recipientId: string): Promise<boolean> {
+    assertSafeId(recipientId, "recipient id");
+    return this.removeDirectoryIfEmpty(path.join(this.root, "mailboxes", recipientId));
+  }
+
+  async removeSessionPresenceIfEmpty(sessionId: string): Promise<boolean> {
+    assertSafeId(sessionId, "session id");
+    return this.removeDirectoryIfEmpty(path.join(this.root, "presence", sessionId));
+  }
+
   async updateDelivery(
     recipientId: string,
     messageId: string,
@@ -262,6 +315,35 @@ export class FsMailStore {
     const next = { ...current, ...update };
     await this.putDelivery(next);
     return next;
+  }
+
+  private async removeDirectoryIfEmpty(directory: string): Promise<boolean> {
+    try {
+      await rmdir(directory);
+      return true;
+    } catch (error) {
+      return errorCode(error) === "ENOENT";
+    }
+  }
+
+  private async removeEmptyPiParent(): Promise<void> {
+    const parent = path.dirname(this.root);
+    if (path.basename(this.root) === "mails" && path.basename(parent) === ".pi") {
+      await rmdir(parent).catch(() => {});
+    }
+  }
+
+  private async ensureIgnoreFile(): Promise<void> {
+    const ignoreFile = path.join(this.root, ".gitignore");
+    try {
+      await writeFile(ignoreFile, STORE_IGNORE_CONTENT, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o644,
+      });
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+    }
   }
 
   private peerFile(peerId: string): string {

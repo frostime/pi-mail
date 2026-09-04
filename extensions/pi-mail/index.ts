@@ -1,11 +1,15 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 import { parseReminderPolicy, type ReminderStatus } from "./attention-policy.ts";
 import type { MailService } from "./mail-service.ts";
 import { PI_MAIL_SETTINGS_NAMESPACE, PI_MAIL_REMINDER_SETTING } from "./reminder-settings.ts";
-import { createMailSessionRuntime, type MailSessionRuntime } from "./session-runtime.ts";
+import {
+  createMailSessionRuntime,
+  MailStorageUnavailableError,
+  type MailSessionRuntime,
+} from "./session-runtime.ts";
 import {
   collapsedResultLabel,
   formatToolContent,
@@ -46,10 +50,17 @@ function reminderHelp(status: ReminderStatus): string {
 
 export default function piMailExtension(pi: ExtensionAPI): void {
   let activeSession: MailSessionRuntime | null = null;
+  let unavailableReason: string | null = null;
   let settingsHintShown = false;
 
   function isActive(session: MailSessionRuntime): boolean {
     return activeSession === session;
+  }
+
+  function requireActiveSession(ctx: ExtensionContext): MailSessionRuntime | null {
+    if (activeSession) return activeSession;
+    ctx.ui.notify(unavailableReason ?? "Pi Mail is not ready for the current session.", "error");
+    return null;
   }
 
   function samePolicy(
@@ -63,9 +74,17 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     const previous = activeSession;
     activeSession = null;
+    unavailableReason = null;
     await previous?.dispose();
 
-    activeSession = await createMailSessionRuntime({ pi, ctx });
+    try {
+      activeSession = await createMailSessionRuntime({ pi, ctx });
+    } catch (error) {
+      if (!(error instanceof MailStorageUnavailableError)) throw error;
+      unavailableReason = error.message;
+      if (ctx.hasUI) ctx.ui.notify(error.message, "warning");
+      else console.warn(`[pi-mail] ${error.message}`);
+    }
     settingsHintShown = false;
   });
 
@@ -86,11 +105,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.registerCommand("mail-reminder", {
     description: "Configure quiet-mail reminders: /mail-reminder off|after-turn|<minutes>|default",
     handler: async (args, ctx) => {
-      const session = activeSession;
-      if (!session) {
-        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
-        return;
-      }
+      const session = requireActiveSession(ctx);
+      if (!session) return;
 
       const mailbox = session.mailbox;
       const value = args.trim().toLowerCase();
@@ -130,11 +146,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.registerCommand("mail-status", {
     description: "Show the current Pi Mail mailbox and inbox status",
     handler: async (_args, ctx) => {
-      const session = activeSession;
-      if (!session) {
-        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
-        return;
-      }
+      const session = requireActiveSession(ctx);
+      if (!session) return;
 
       const mailbox = session.mailbox;
       const status = await mailbox.status();
@@ -147,11 +160,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.registerCommand("mail-rename", {
     description: "Rename the current mailbox: /mail-rename <name>",
     handler: async (args, ctx) => {
-      const session = activeSession;
-      if (!session) {
-        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
-        return;
-      }
+      const session = requireActiveSession(ctx);
+      if (!session) return;
 
       const mailbox = session.mailbox;
       const value = args.trim();
@@ -184,11 +194,8 @@ export default function piMailExtension(pi: ExtensionAPI): void {
   pi.registerCommand("mail-ui", {
     description: "Open Pi Mail Web UI; use /mail-ui close to stop it",
     handler: async (args, ctx) => {
-      const session = activeSession;
-      if (!session) {
-        ctx.ui.notify("Pi Mail is not ready for the current session.", "error");
-        return;
-      }
+      const session = requireActiveSession(ctx);
+      if (!session) return;
 
       if (args.trim().toLowerCase() === "close") {
         const closed = await session.closeWebUi();
@@ -228,7 +235,7 @@ export default function piMailExtension(pi: ExtensionAPI): void {
 
     async execute(_toolCallId, params, signal) {
       const mailbox = activeSession?.mailbox;
-      if (!mailbox) throw new Error("Pi Mail is not ready for the current session");
+      if (!mailbox) throw new Error(unavailableReason ?? "Pi Mail is not ready for the current session");
 
       switch (params.action) {
         case "status":

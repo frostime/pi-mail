@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-09-04
+
+### Changed
+
+- Sessions that never meaningfully use Pi Mail now remove an otherwise empty `.pi/mails/` store on normal exit instead of leaving generated directories and `.gitignore` files behind.
+- Pi Mail now disables itself with a concise warning when the project cannot host its runtime store, allowing Pi to continue without an extension error stack.
+
 ## 0.9.1 - 2026-08-27
 
 ### Changed

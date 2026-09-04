@@ -8,6 +8,32 @@ import { createPresenceRuntime } from "./presence-runtime.ts";
 import { loadReminderSettings } from "./reminder-settings.ts";
 import { startWebUi } from "./web/server.ts";
 
+const UNAVAILABLE_STORAGE_CODES = new Set([
+  "EACCES",
+  "EDQUOT",
+  "EEXIST",
+  "EISDIR",
+  "ENAMETOOLONG",
+  "ENOSPC",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : undefined;
+}
+
+export class MailStorageUnavailableError extends Error {
+  constructor(mailRoot: string, options: { cause: unknown }) {
+    const code = errorCode(options.cause);
+    super(`Pi Mail disabled: cannot write to "${mailRoot}"${code ? ` (${code})` : ""}.`, options);
+    this.name = "MailStorageUnavailableError";
+  }
+}
+
 export interface MailSessionRuntime {
   readonly mailbox: MailService;
   onAgentSettled(): Promise<void>;
@@ -40,7 +66,10 @@ export async function createMailSessionRuntime(options: {
   try {
     await mailbox.init({ sessionName: pi.getSessionName() ?? null });
   } catch (error) {
-    await mailbox.close().catch(() => {});
+    await mailbox.close({ discardUnusedMailbox: true }).catch(() => {});
+    if (UNAVAILABLE_STORAGE_CODES.has(errorCode(error) ?? "")) {
+      throw new MailStorageUnavailableError(mailbox.root, { cause: error });
+    }
     throw error;
   }
 
