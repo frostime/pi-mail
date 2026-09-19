@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 /**
@@ -42,4 +45,39 @@ export function resolveProjectRoot(cwd: string): string {
 
 export function resolveMailRoot(cwd: string): string {
   return path.join(resolveProjectRoot(cwd), ".pi", "mails");
+}
+
+/** Base directory for Pi Mail's project-keyed ephemeral runtime data. */
+const PRESENCE_BASE_OVERRIDE_ENV = "PI_MAIL_PRESENCE_ROOT";
+
+function presenceBase(): string {
+  const override = process.env[PRESENCE_BASE_OVERRIDE_ENV]?.trim();
+  if (override) return override;
+  return path.join(os.homedir(), ".pi", "tmp", "pi-mail");
+}
+
+/**
+ * Resolve the ephemeral presence bucket for a project: a hashed directory
+ * under the user's Pi temp area.
+ *
+ * The key must be derived from the same canonicalization that picks the mail
+ * store location, so presence splitting can never diverge more than the store
+ * itself does. realpathSync resolves the remaining aliasing layer (symbolic
+ * links, junctions, path case) on top of the Git-based root; exotic aliases
+ * such as subst drives are explicitly out of scope.
+ */
+export function resolvePresenceRoot(cwd: string): { root: string; projectRoot: string } {
+  const logicalRoot = resolveProjectRoot(cwd);
+
+  // The project root contains cwd and therefore exists; realpath it to strip
+  // symbolic links, junctions, and path-case spelling differences.
+  let canonical: string;
+  try {
+    canonical = realpathSync.native(logicalRoot);
+  } catch {
+    canonical = logicalRoot;
+  }
+
+  const hash = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+  return { root: path.join(presenceBase(), hash), projectRoot: canonical };
 }

@@ -1,7 +1,5 @@
-import { randomUUID } from "node:crypto";
 import {
   mkdir,
-  readFile,
   readdir,
   rename,
   rm,
@@ -10,86 +8,28 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  assertSafeId,
+  atomicWriteJson,
+  errorCode,
+  listJson,
+  readJson,
+} from "./store-util.ts";
 import { decodePeerRecord, type PeerRecordV2 } from "./peer-record.ts";
 import type {
   DeliveryRecord,
   MessageRecord,
-  PresenceRecord,
 } from "./types.ts";
 
-const SAFE_ID = /^[A-Za-z0-9._-]+$/;
-const STORE_DIRECTORIES = ["peers", "presence", "messages", "mailboxes"] as const;
+const STORE_DIRECTORIES = ["peers", "messages", "mailboxes"] as const;
+/** Presence storage left behind by pre-0.11 runtimes, kept cleanable. */
+const LEGACY_PRESENCE_DIRECTORY = "presence";
 const STORE_IGNORE_CONTENT = "# Pi Mail runtime data\n*\n";
 const MANAGED_IGNORE_CONTENTS = new Set([
   STORE_IGNORE_CONTENT,
   "# Pi Mail runtime data\n*\n!.gitignore\n",
   "# Pi Mail runtime data\n*\n.gitignore\n",
 ]);
-
-function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
-}
-
-function assertSafeId(value: string, label = "id"): void {
-  if (!SAFE_ID.test(value)) {
-    throw new Error(`Invalid ${label}`);
-  }
-}
-
-async function readJson<T>(file: string): Promise<T | null> {
-  try {
-    return JSON.parse(await readFile(file, "utf8")) as T;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function atomicWriteJson(file: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-
-  try {
-    await rename(tmp, file);
-  } catch (error) {
-    // rename() is atomic on the local filesystems we target, but Windows does
-    // not consistently replace an existing destination. The fallback keeps
-    // the update local to one delivery/presence record instead of introducing
-    // a cross-process lock protocol.
-    if (errorCode(error) === "EEXIST" || errorCode(error) === "EPERM") {
-      await rm(file, { force: true });
-      await rename(tmp, file);
-      return;
-    }
-
-    await rm(tmp, { force: true });
-    throw error;
-  }
-}
-
-async function listJson<T>(dir: string): Promise<T[]> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return [];
-    throw error;
-  }
-
-  const values: T[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const value = await readJson<T>(path.join(dir, name));
-    if (value) values.push(value);
-  }
-  return values;
-}
 
 export class FsMailStore {
   readonly root: string;
@@ -102,6 +42,10 @@ export class FsMailStore {
     for (const dir of STORE_DIRECTORIES) {
       await mkdir(path.join(this.root, dir), { recursive: true });
     }
+    // A store created by an older Pi Mail version still owns a presence
+    // directory inside the project; it is obsolete now that presence lives in
+    // the user temp area, so clear it when it holds nothing.
+    await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY));
     await this.ensureIgnoreFile();
   }
 
@@ -109,6 +53,11 @@ export class FsMailStore {
   async removeIfEmpty(): Promise<boolean> {
     for (const dir of STORE_DIRECTORIES) {
       if (!await this.removeDirectoryIfEmpty(path.join(this.root, dir))) return false;
+    }
+    // Legacy in-project presence data is not mail data; an empty directory
+    // must not block the store cleanup.
+    if (!await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY))) {
+      return false;
     }
 
     let entries: string[];
@@ -185,47 +134,6 @@ export class FsMailStore {
     await rm(this.peerFile(peerId), { force: true });
   }
 
-  async putPresence(presence: PresenceRecord): Promise<void> {
-    await atomicWriteJson(
-      this.presenceFile(presence.sessionId, presence.runtimeId),
-      presence,
-    );
-  }
-
-  async removePresence(sessionId: string, runtimeId: string): Promise<void> {
-    await rm(this.presenceFile(sessionId, runtimeId), { force: true });
-
-    try {
-      await rmdir(path.join(this.root, "presence", sessionId));
-    } catch {
-      // A non-empty directory means another runtime for this session is still
-      // present and therefore must remain discoverable.
-    }
-  }
-
-  async removeSessionPresence(sessionId: string): Promise<void> {
-    assertSafeId(sessionId, "session id");
-    await rm(path.join(this.root, "presence", sessionId), { recursive: true, force: true });
-  }
-
-  async listPresence(): Promise<PresenceRecord[]> {
-    const base = path.join(this.root, "presence");
-    let sessionDirs;
-    try {
-      sessionDirs = await readdir(base, { withFileTypes: true });
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    const values: PresenceRecord[] = [];
-    for (const entry of sessionDirs) {
-      if (!entry.isDirectory()) continue;
-      values.push(...await listJson<PresenceRecord>(path.join(base, entry.name)));
-    }
-    return values;
-  }
-
   async tryCreateMessage(message: MessageRecord): Promise<boolean> {
     const file = this.messageFile(message.id);
     await mkdir(path.dirname(file), { recursive: true });
@@ -299,11 +207,6 @@ export class FsMailStore {
     return this.removeDirectoryIfEmpty(path.join(this.root, "mailboxes", recipientId));
   }
 
-  async removeSessionPresenceIfEmpty(sessionId: string): Promise<boolean> {
-    assertSafeId(sessionId, "session id");
-    return this.removeDirectoryIfEmpty(path.join(this.root, "presence", sessionId));
-  }
-
   async updateDelivery(
     recipientId: string,
     messageId: string,
@@ -349,12 +252,6 @@ export class FsMailStore {
   private peerFile(peerId: string): string {
     assertSafeId(peerId, "peer id");
     return path.join(this.root, "peers", `${peerId}.json`);
-  }
-
-  private presenceFile(sessionId: string, runtimeId: string): string {
-    assertSafeId(sessionId, "session id");
-    assertSafeId(runtimeId, "runtime id");
-    return path.join(this.root, "presence", sessionId, `${runtimeId}.json`);
   }
 
   private messageFile(messageId: string): string {
