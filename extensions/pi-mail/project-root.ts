@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /**
  * Resolve the project root that owns Pi Mail's shared runtime directory.
@@ -53,7 +54,9 @@ const PRESENCE_BASE_OVERRIDE_ENV = "PI_MAIL_PRESENCE_ROOT";
 function presenceBase(): string {
   const override = process.env[PRESENCE_BASE_OVERRIDE_ENV]?.trim();
   if (override) return override;
-  return path.join(os.homedir(), ".pi", "tmp", "pi-mail");
+  // Pi's own agent-directory resolution (PI_CODING_AGENT_DIR override, forked
+  // configDir) is the sanctioned "Pi home" anchor; keep ephemeral data with it.
+  return path.join(getAgentDir(), "tmp", "pi-mail");
 }
 
 /**

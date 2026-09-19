@@ -17,7 +17,7 @@
 
 | 数据 | 生命周期 | 位置 | 创建时机 |
 |---|---|---|---|
-| presence 心跳 | 纯临时(TTL 20s) | `~/.pi/tmp/pi-mail/<项目哈希>/` | 会话启动,首次心跳 |
+| presence 心跳 | 纯临时(TTL 20s) | `getAgentDir()/tmp/pi-mail/<项目哈希>/`(通常 `~/.pi/agent/tmp/pi-mail/`) | 会话启动,首次心跳 |
 | peer 档案 / 消息 / 投递记录 | 跨会话、跨重启持久 | `<project>/.pi/mails/` | 首次持久写操作 |
 
 推导链:项目目录懒创建 ⟹ 启动期的所有写操作都不能碰项目目录。presence 心跳不可推迟(活动检测依赖),只能外移;peer 档案可以推迟(发现/寻址由 presence 兜底),推迟后天然发生在 store 创建之时。
@@ -71,7 +71,7 @@
 1. **统一懒注册**:无论项目是否已有 store,新会话一律不落盘 peer 档案,等首次持久写操作。(实现层一致性选择,由 agent 判断定;用户有异议可推翻。)
 2. **presence 记录扩展字段**:别名、可发现标志——支撑 peer 档案存在前的发现与寻址。这是寻址解析现状(只查 peer 档案,`resolveOne`)推导出的必然设计。
 3. **寻址解析合并 presence 兜底**:peer 档案不存在时,presence 作为别名/会话 ID 的解析来源;歧义处理沿用现有语义。
-4. **临时目录 key 派生**:`resolveProjectRoot()`(git common-dir 收敛)→ `fs.realpathSync.native`(解析符号链接/junction/大小写)→ SHA-256 短哈希作为桶名;桶内放 `project.json` 记录原始路径便于排查。已实测:从 junction 进入时 git 与 realpath 均收敛到同一物理路径。
+4. **临时目录位置与 key 派生**:基础目录用 Pi 公开的 `getAgentDir()` API——尊重 `PI_CODING_AGENT_DIR` 覆盖与 fork 的 configDir,而不是硬编码 `~/.pi`。key 派生:`resolveProjectRoot()`(git common-dir 收敛)→ `fs.realpathSync.native`(解析符号链接/junction/大小写)→ SHA-256 短哈希作为桶名;桶内放 `project.json` 记录原始路径便于排查。已实测:从 junction 进入时 git 与 realpath 均收敛到同一物理路径。
 5. **别名碰撞**:别名生成不再能在开户时对全网去重(presence-only 会话查不到 peer 全集),碰撞概率 1/1000 量级,由现有"别名歧义报错"语义覆盖。
 6. **接收者档案**:投递记录本身是消息所有权根,投递给从未注册的会话时无需为其创建 peer 档案;该接收者首次注册时沿用既有的"旧投递使邮箱转持久"检测逻辑。
 7. **provisional 生命周期、discardUnusedMailbox、removeIfEmpty 清理 `.pi` 父目录**的既有机制保留,语义不变。
