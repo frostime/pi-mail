@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-20
+
 ### Changed
 
 - Pi Mail no longer creates `<project>/.pi/mails/` when a session starts. The durable store is created lazily on the first durable mail write (sending, receiving, or explicitly configuring a mailbox), so projects that never exchange mail keep a clean directory, including after a crash. Sessions remain discoverable and addressable immediately: ephemeral presence now lives under Pi's agent temp area (`getAgentDir()/tmp/pi-mail/<project-hash>/`) instead of the project.
 - Addressing and discovery now also resolve sessions that have not registered a durable peer record through their heartbeat-advertised identity.
 - When the project location cannot host the mail store, Pi Mail no longer warns at session startup; the concise "Pi Mail disabled" error surfaces on the first durable write, and read-only use of a blocked store behaves as empty.
+
+### Fixed
+
+- The first mail sent by a just-registered session now carries its actual registered alias; previously a colliding generated alias could sign the message with another session's alias.
+- Leftover in-project presence files from force-killed older Pi Mail runtimes are pruned, so an otherwise empty `.pi/mails/` store can still be removed after upgrading.
 
 ## 0.10.0 - 2026-09-04
 
