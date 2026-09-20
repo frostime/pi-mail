@@ -4,6 +4,7 @@ import {
   rename,
   rm,
   rmdir,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
@@ -24,6 +25,12 @@ import type {
 const STORE_DIRECTORIES = ["peers", "messages", "mailboxes"] as const;
 /** Presence storage left behind by pre-0.11 runtimes, kept cleanable. */
 const LEGACY_PRESENCE_DIRECTORY = "presence";
+/**
+ * A running pre-0.11 runtime rewrites its presence file every few seconds, so
+ * a file untouched for this long belongs to a crashed runtime; the generous
+ * threshold protects slow or suspended sessions from being pruned.
+ */
+const LEGACY_PRESENCE_STALE_MS = 300_000;
 const STORE_IGNORE_CONTENT = "# Pi Mail runtime data\n*\n";
 const MANAGED_IGNORE_CONTENTS = new Set([
   STORE_IGNORE_CONTENT,
@@ -44,7 +51,8 @@ export class FsMailStore {
     }
     // A store created by an older Pi Mail version still owns a presence
     // directory inside the project; it is obsolete now that presence lives in
-    // the user temp area, so clear it when it holds nothing.
+    // the user temp area, so prune crashed-runtime residue and clear it.
+    await this.pruneLegacyPresence();
     await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY));
     await this.ensureIgnoreFile();
   }
@@ -54,8 +62,9 @@ export class FsMailStore {
     for (const dir of STORE_DIRECTORIES) {
       if (!await this.removeDirectoryIfEmpty(path.join(this.root, dir))) return false;
     }
-    // Legacy in-project presence data is not mail data; an empty directory
-    // must not block the store cleanup.
+    // Legacy in-project presence data is not mail data; stale residue from
+    // crashed old-version runtimes must not block the store cleanup.
+    await this.pruneLegacyPresence();
     if (!await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY))) {
       return false;
     }
@@ -218,6 +227,45 @@ export class FsMailStore {
     const next = { ...current, ...update };
     await this.putDelivery(next);
     return next;
+  }
+
+  /**
+   * Opportunistically delete legacy presence files whose owning runtime is
+   * provably dead (stale mtime), so crash residue cannot block store cleanup
+   * forever. Read failures are swallowed: this cleanup is not load-bearing.
+   */
+  private async pruneLegacyPresence(): Promise<void> {
+    const base = path.join(this.root, LEGACY_PRESENCE_DIRECTORY);
+    let sessionDirs;
+    try {
+      sessionDirs = await readdir(base, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    const cutoff = Date.now() - LEGACY_PRESENCE_STALE_MS;
+    for (const entry of sessionDirs) {
+      if (!entry.isDirectory()) continue;
+      const sessionDir = path.join(base, entry.name);
+
+      let names;
+      try {
+        names = await readdir(sessionDir);
+      } catch {
+        continue;
+      }
+
+      for (const name of names) {
+        const file = path.join(sessionDir, name);
+        try {
+          const info = await stat(file);
+          if (info.mtimeMs < cutoff) await rm(file, { force: true });
+        } catch {
+          // Unreadable or already removed by a concurrent prune; retry later.
+        }
+      }
+      await rmdir(sessionDir).catch(() => {});
+    }
   }
 
   private async removeDirectoryIfEmpty(directory: string): Promise<boolean> {
