@@ -123,6 +123,20 @@ test("session exit leaves no project data for a session that never used Mail", a
   }
 });
 
+test("cleanup removes a created store once it contains no mail data", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-empty-store-cleanup-"));
+  try {
+    const store = new FsMailStore(resolveMailRoot(cwd));
+    await store.init();
+
+    assert.equal(await store.removeIfEmpty(), true);
+    await assert.rejects(access(store.root), { code: "ENOENT" });
+    await assert.rejects(access(path.join(cwd, ".pi")), { code: "ENOENT" });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("unused mailbox cleanup preserves unrelated project Pi data", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-shared-pi-dir-"));
   const settingsFile = path.join(cwd, ".pi", "settings.json");

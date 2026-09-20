@@ -54,7 +54,8 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
     "pack:check": "npm pack --dry-run"
   },
   "devDependencies": {

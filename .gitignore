@@ -3,6 +3,5 @@ coverage/
 *.tgz
 npm-debug.log*
 .DS_Store
-tsconfig.json
 
 .pi-input.md

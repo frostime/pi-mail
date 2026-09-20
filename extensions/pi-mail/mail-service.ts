@@ -166,6 +166,13 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function latestPresence(presences: PresenceRecord[]): PresenceRecord | undefined {
+  return presences.reduce<PresenceRecord | undefined>(
+    (latest, presence) => !latest || presence.lastSeenAt > latest.lastSeenAt ? presence : latest,
+    undefined,
+  );
+}
+
 function makePeerDurable(peer: PeerRecordV2): PeerRecordV2 {
   if (peer.provisional !== true) return peer;
   const next = { ...peer, updatedAt: nowIso() };
@@ -266,7 +273,7 @@ export class MailService {
     if (options.sessionName !== undefined) {
       this.currentSessionName = normalizeSessionName(options.sessionName);
     }
-    await this.store.init();
+    await this.writeStore(() => this.store.init());
 
     const timestamp = nowIso();
     const existing = await this.store.getPeer(this.sessionId);
@@ -295,7 +302,7 @@ export class MailService {
       updatedAt: timestamp,
     };
 
-    await this.store.putPeer(peer);
+    await this.writeStore(() => this.store.putPeer(peer));
     await this.heartbeat();
     return peer;
   }
@@ -309,23 +316,22 @@ export class MailService {
    * keeps the session discoverable and addressable in the meantime.
    */
   private async ensureRegistered(): Promise<void> {
-    if (await this.store.getPeer(this.sessionId)) return;
-    try {
-      await this.init({ sessionName: this.currentSessionName });
-    } catch (error) {
-      if (error instanceof MailStorageUnavailableError) throw error;
-      if (UNAVAILABLE_STORAGE_CODES.has(errorCode(error) ?? "")) {
-        throw new MailStorageUnavailableError(this.root, { cause: error });
-      }
-      throw error;
-    }
+    const existing = await this.store.getPeer(this.sessionId);
+    if (existing && !existing.deletedAt) return;
+    await this.init({ sessionName: this.currentSessionName });
   }
 
   /** Create the durable store directories if the session is about to write mail data. */
   private async ensureStore(): Promise<void> {
+    await this.writeStore(() => this.store.init());
+  }
+
+  /** Normalize storage availability failures without hiding data or programming errors. */
+  private async writeStore<T>(write: () => Promise<T>): Promise<T> {
     try {
-      await this.store.init();
+      return await write();
     } catch (error) {
+      if (error instanceof MailStorageUnavailableError) throw error;
       if (UNAVAILABLE_STORAGE_CODES.has(errorCode(error) ?? "")) {
         throw new MailStorageUnavailableError(this.root, { cause: error });
       }
@@ -511,14 +517,7 @@ export class MailService {
     includeUndiscoverable: boolean;
   }): Promise<DiscoveredPeer[]> {
     const peers = await this.store.listPeers();
-    const livePresence = await this.activePresence();
-    const presenceBySession = new Map<string, typeof livePresence>();
-
-    for (const presence of livePresence) {
-      const list = presenceBySession.get(presence.sessionId) ?? [];
-      list.push(presence);
-      presenceBySession.set(presence.sessionId, list);
-    }
+    const presenceBySession = await this.activePresenceBySession();
 
     const visible = (id: string): boolean =>
       (options.includeSelf || id !== this.sessionId);
@@ -530,9 +529,7 @@ export class MailService {
       .filter((peer) => options.includeInactive || presenceBySession.has(peer.id))
       .map((peer) => {
         const presences = presenceBySession.get(peer.id) ?? [];
-        const latest = presences
-          .slice()
-          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))[0];
+        const latest = latestPresence(presences);
 
         return {
           id: peer.id,
@@ -553,9 +550,7 @@ export class MailService {
       .filter(([id]) => !peers.some((peer) => peer.id === id && !peer.deletedAt))
       .filter(([id]) => visible(id))
       .map(([id, presences]) => {
-        const latest = presences
-          .slice()
-          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))[0];
+        const latest = latestPresence(presences);
 
         return {
           id,
@@ -634,9 +629,9 @@ export class MailService {
 
     const deleted: PeerAddress[] = [];
     for (const peer of targets) {
-      await this.store.removeMailbox(peer.id);
+      await this.writeStore(() => this.store.removeMailbox(peer.id));
       await this.presenceStore.removeSessionPresence(peer.id);
-      await this.store.removePeer(peer.id);
+      await this.writeStore(() => this.store.removePeer(peer.id));
       deleted.push({ id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias });
     }
 
@@ -673,7 +668,7 @@ export class MailService {
     let deletedCount = 0;
     for (const message of messages) {
       if (referencedMessageIds.has(message.id)) continue;
-      await this.store.removeMessage(message.id);
+      await this.writeStore(() => this.store.removeMessage(message.id));
       deletedCount += 1;
     }
 
@@ -715,9 +710,9 @@ export class MailService {
 
       let nextDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
-        nextDelivery = await this.store.updateDelivery(this.sessionId, resolvedMessageId, {
+        nextDelivery = await this.writeStore(() => this.store.updateDelivery(this.sessionId, resolvedMessageId, {
           presentedAt: nowIso(),
-        }) ?? delivery;
+        })) ?? delivery;
       }
       return this.decorateMessage(message, nextDelivery);
     }
@@ -737,9 +732,9 @@ export class MailService {
     for (const { message, delivery } of entries.slice(0, boundedLimit(options.limit))) {
       let visibleDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
-        visibleDelivery = await this.store.updateDelivery(this.sessionId, delivery.messageId, {
+        visibleDelivery = await this.writeStore(() => this.store.updateDelivery(this.sessionId, delivery.messageId, {
           presentedAt: nowIso(),
-        }) ?? delivery;
+        })) ?? delivery;
       }
       output.push(await this.decorateMessage(message, visibleDelivery));
     }
@@ -749,7 +744,9 @@ export class MailService {
   async markPresented(messageId: string): Promise<DeliveryRecord | null> {
     const delivery = await this.store.getDelivery(this.sessionId, messageId);
     if (!delivery || delivery.presentedAt) return delivery;
-    return this.store.updateDelivery(this.sessionId, messageId, { presentedAt: nowIso() });
+    return this.writeStore(() => this.store.updateDelivery(this.sessionId, messageId, {
+      presentedAt: nowIso(),
+    }));
   }
 
   async waitForInbox(options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<WaitResult> {
@@ -945,7 +942,7 @@ export class MailService {
     // both create the same canonical message.
     for (let attempt = 0; attempt < MAX_MESSAGE_ID_ATTEMPTS; attempt += 1) {
       const id = generateMessageId();
-      message = {
+      const candidate: MessageRecord = {
         version: 1,
         id,
         senderKind: input.senderKind,
@@ -961,8 +958,10 @@ export class MailService {
         createdAt,
       };
 
-      if (await this.store.tryCreateMessage(message)) break;
-      message = null;
+      if (await this.writeStore(() => this.store.tryCreateMessage(candidate))) {
+        message = candidate;
+        break;
+      }
     }
 
     if (!message) {
@@ -976,14 +975,14 @@ export class MailService {
 
   private async deliver(message: MessageRecord, kind: RecipientKind, recipients: string[]): Promise<void> {
     for (const recipientId of recipients) {
-      await this.store.putDelivery({
+      await this.writeStore(() => this.store.putDelivery({
         version: 1,
         messageId: message.id,
         recipientId,
         kind,
         deliveredAt: nowIso(),
         presentedAt: null,
-      });
+      }));
     }
   }
 
@@ -1022,11 +1021,11 @@ export class MailService {
     // are live: their heartbeat advertises id and alias.
     const peers = (await this.store.listPeers()).filter((peer) => !peer.deletedAt);
     const peerIds = new Set(peers.map((peer) => peer.id));
-    const presenceCandidates = (await this.activePresence())
-      .filter((presence) => !peerIds.has(presence.sessionId))
-      .map((presence) => ({
-        id: presence.sessionId,
-        alias: presence.alias ?? shortSessionId(presence.sessionId),
+    const presenceCandidates = [...await this.activePresenceBySession()]
+      .filter(([sessionId]) => !peerIds.has(sessionId))
+      .map(([sessionId, presences]) => ({
+        id: sessionId,
+        alias: latestPresence(presences)?.alias ?? shortSessionId(sessionId),
       }));
     const candidates = [
       ...peers.map((peer) => ({ id: peer.id, alias: peer.alias })),
@@ -1146,24 +1145,24 @@ export class MailService {
     if (!peer) {
       // A lazily registering recipient is addressed through its heartbeat;
       // materialize the record so the new delivery has a durable owner.
-      const presence = (await this.activePresence())
-        .find((candidate) => candidate.sessionId === peerId);
+      const presence = latestPresence((await this.activePresenceBySession()).get(peerId) ?? []);
       if (!presence) throw new Error(`Session mailbox "${peerId}" no longer exists`);
       const timestamp = nowIso();
-      await this.store.putPeer({
+      await this.writeStore(() => this.store.putPeer({
         version: 2,
         id: peerId,
         alias: presence.alias ?? shortSessionId(peerId),
+        ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
         cwd: presence.cwd,
         discoverable: true,
         createdAt: timestamp,
         updatedAt: timestamp,
-      });
+      }));
       peer = await this.store.getPeer(peerId);
     }
     if (!peer) throw new Error(`Session mailbox "${peerId}" no longer exists`);
     const durable = makePeerDurable(peer);
-    if (durable !== peer) await this.store.putPeer(durable);
+    if (durable !== peer) await this.writeStore(() => this.store.putPeer(durable));
   }
 
   private async discardUnusedMailbox(): Promise<void> {
@@ -1206,7 +1205,7 @@ export class MailService {
         const peer = await this.store.getPeer(this.sessionId);
         if (!peer) throw new Error("Current session is not registered");
         const next = update(peer);
-        if (next !== peer) await this.store.putPeer(next);
+        if (next !== peer) await this.writeStore(() => this.store.putPeer(next));
         resolveResult(next);
       } catch (error) {
         rejectResult(error);
@@ -1248,8 +1247,18 @@ export class MailService {
     });
   }
 
+  private async activePresenceBySession(): Promise<Map<string, PresenceRecord[]>> {
+    const grouped = new Map<string, PresenceRecord[]>();
+    for (const presence of await this.activePresence()) {
+      const records = grouped.get(presence.sessionId) ?? [];
+      records.push(presence);
+      grouped.set(presence.sessionId, records);
+    }
+    return grouped;
+  }
+
   private async activeSessionIds(): Promise<Set<string>> {
-    return new Set((await this.activePresence()).map((presence) => presence.sessionId));
+    return new Set((await this.activePresenceBySession()).keys());
   }
 
   /**

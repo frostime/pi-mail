@@ -41,6 +41,10 @@ extensions/pi-mail/
 - Tests in `test/*.test.ts` link straight to source files by topic (extension-entry tests link to `index.ts`)
 
 
+## Dependencies
+
+Pi Mail has no third-party runtime dependencies. Node built-ins and Pi-provided peer packages are allowed; adding another runtime dependency is a product-level change.
+
 ## Version & Publish
 
 - Version: update `package.json` + `CHANGELOG.md`

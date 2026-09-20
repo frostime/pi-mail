@@ -3,7 +3,6 @@ title: Pi Mail Extension Specification
 description: Maintenance contract for extensions/pi-mail — behavior, invariants, compatibility, and semantics that future implementations must preserve.
 scope:
   - extensions/pi-mail/**
-updated: 2026-08-23
 ---
 
 # Pi Mail Extension Specification
@@ -14,7 +13,7 @@ This document is the maintenance contract for `extensions/pi-mail`. It records b
 
 Pi Mail provides communication between independent Pi sessions. It must not acquire orchestration semantics such as tasks, roles, parent/child relationships, scheduling, spawning, work ownership, wait graphs, consensus, or workflow state.
 
-The model-facing surface is one `mail` tool. Keep its registration metadata compact. Usage policy and examples belong in the bundled `pi-mail` skill rather than `promptGuidelines` or long parameter descriptions. Tool `content` should contain only what the model needs for its next action; storage-shaped data may remain in `details` for rendering and session state.
+The model-facing surface is one compact `mail` tool. Tool `content` should contain only what the model needs for its next action; storage-shaped data may remain in `details` for rendering and session state.
 
 ## Identity and addressing
 
@@ -38,7 +37,7 @@ The reserved address `user` maps to the human principal `human-local`. It is add
 
 Session short IDs use the random UUID tail rather than the leading timestamp-like portion; nearby time-ordered UUIDs can otherwise share a visible prefix. Session address resolution accepts an exact session ID, an unambiguous leading or trailing ID fragment of at least six characters, or an alias.
 
-New message IDs are complete seven-character lowercase base-36 references. `reply_to`, `inbox`, and `thread` require an exact message ID; a displayed message ID must never become ambiguous as more mail arrives. Creation uses exclusive canonical-file creation as the cross-process collision check and retries a newly generated ID on `EEXIST`. UUID-era messages remain readable and display their complete UUID. Their old six-or-more-character leading or trailing references remain accepted only as a compatibility input path; they are not displayed for new or legacy messages.
+New message IDs are complete seven-character lowercase base-36 references. `reply_to`, `inbox`, and `thread` require an exact message ID; a displayed message ID must never become ambiguous as more mail arrives. Concurrent creation must not overwrite an existing message and must retry an ID collision. UUID-era messages remain readable and display their complete UUID. Their old six-or-more-character leading or trailing references remain accepted only as a compatibility input path; they are not displayed for new or legacy messages.
 
 Ambiguous legacy message or session ID fragments fail and list candidates. Explicitly duplicated aliases are resolved to the one active match only when exactly one matching session is active; otherwise the operation fails with the ambiguous candidates instead of silently choosing a mailbox.
 
@@ -46,17 +45,15 @@ Ambiguous legacy message or session ID fragments fail and list candidates. Expli
 
 The mailbox namespace is project-local. For a normal Git repository, the canonical project root is the parent of Git's shared common directory, so the main checkout and linked worktrees share one `.pi/mails/` store. Non-Git directories use the current working directory as their scope. Unusual Git layouts must prefer isolation over guessing a broader shared namespace.
 
-Runtime data lives under `<project>/.pi/mails/`. The module creates `.pi/mails/.gitignore` containing `*`, which ignores the whole directory including that rule file. It must not edit the repository root `.gitignore`. The project store is created lazily on the first durable mail write; sessions that never produce durable mail data leave no project-side files, so no startup-time or crash residue exists for them. Ephemeral presence lives outside the project under Pi's agent temp area (`getAgentDir()/tmp/pi-mail/<hash>/`, typically `~/.pi/agent/tmp/pi-mail/`), where `<hash>` is derived from the canonical project root: the Git-based root resolution followed by a realpath pass. The hashed bucket records the originating project path in a `project.json` marker. Stale presence files are swept opportunistically and must never be treated as live activity. If the project location cannot host the store, durable writes fail with one concise "Pi Mail disabled" error instead of failing Pi startup; read-only use of an unavailable store behaves as empty. Data-format and programming errors must remain visible.
+Runtime data lives under `<project>/.pi/mails/`. The module creates `.pi/mails/.gitignore` containing `*`, which ignores the whole directory including that rule file. It must not edit the repository root `.gitignore`. The project store is created lazily on the first durable mail write; sessions that never produce durable mail data leave no project-side files, so no startup-time or crash residue exists for them. Ephemeral presence lives outside the project under Pi's agent temp area and is keyed by the canonical project scope, so supported paths to the same physical project converge while different projects remain isolated. Stale presence must never be treated as live activity. If the project location cannot host the store, durable writes fail with one concise "Pi Mail disabled" error instead of failing Pi startup; read-only use of a missing or structurally blocked store behaves as empty. Permission, data-format, and programming errors must remain visible on reads so inaccessible data is not mistaken for absent data.
 
-Canonical messages remain one immutable JSON file per message. Recipient delivery state is stored separately per recipient and may be updated independently. The storage design must not require multiple senders to append to or rewrite a shared JSONL or mailbox log. Pi Mail has no age- or size-based history cap. Automatic provisional-mailbox cleanup must not delete canonical messages because that lifecycle path is only for mailboxes that never gained durable mail value.
+Canonical messages remain immutable and recipient delivery state is stored separately per recipient so independent senders never append to or rewrite a shared mailbox log. Pi Mail has no age- or size-based history cap. Automatic provisional-mailbox cleanup must not delete canonical messages because that lifecycle path is only for mailboxes that never gained durable mail value. A send spans a canonical message and one or more delivery records; storage failure is reported, but cross-file transaction rollback is not guaranteed.
 
-The human user may explicitly delete one or more inactive session mailboxes from the Web UI. Deletion removes each selected session's recipient mailbox state, presence, and peer record so it disappears immediately from discovery, addressing, and Web UI recipient lists. Active sessions and the current session must be rejected, and an invalid member of a batch must reject the whole batch before any destructive write.
+The human user may explicitly delete one or more inactive session mailboxes from the Web UI. Deletion removes each selected session's recipient mailbox state, presence, and peer record so it disappears immediately from discovery, addressing, and Web UI recipient lists. Active sessions and the current session must be rejected, and an invalid member of a batch must reject the whole batch before any destructive write. Deletion removes the current mailbox data; it does not reserve or permanently ban the session UUID. If that session becomes active again, it may register a new empty mailbox, but the deleted mailbox state is not reconstructed.
 
-After a successful explicit deletion batch, Pi Mail garbage-collects canonical messages that are no longer owned by any extant session mailbox. A message is owned while its session sender peer still exists, or while any extant recipient mailbox still has a delivery record for it. Human-origin mail has no permanent sender root. Tombstoned legacy peers and thread relationships are not ownership roots. Deleting one participant must therefore preserve mail still owned by another participant, while deleting the last owning mailbox makes the canonical message eligible for removal. One batch performs one ownership scan and GC sweep.
+After a successful explicit deletion batch, Pi Mail garbage-collects canonical messages that are no longer owned by any extant session mailbox. A message is owned while its session sender peer still exists, or while any extant recipient mailbox still has a delivery record for it. Human-origin mail has no permanent sender root. Tombstoned legacy peers and thread relationships are not ownership roots. Deleting one participant must therefore preserve mail still owned by another participant, while deleting the last owning mailbox makes the canonical message eligible for removal.
 
-Pi Mail 0.4 tombstoned peer records remain readable for compatibility and are filtered from listings. If the same session UUID is later resumed, initialization re-registers the identity, but its deleted recipient mailbox state is not reconstructed.
-
-Pi Mail has no third-party runtime dependencies. Node built-ins and Pi-provided peer packages are allowed; adding another runtime dependency is a product-level change.
+Pi Mail 0.4 tombstoned peer records remain readable for compatibility and are filtered from listings. If the same session UUID is later resumed, initialization re-registers the identity, but its deleted recipient delivery state is not reconstructed.
 
 ## Message and thread semantics
 
@@ -82,13 +79,13 @@ Quiet direct `To` mail is governed by one recipient-owned reminder policy: `off`
 
 An eligible quiet nudge is emitted only while Pi is idle, with `deliverAs: "followUp"` and `triggerTurn: true`. While Pi is busy, the runtime records only an `agent_settled` recheck and does not pre-queue a Pi message, so changing the effective policy to `off` before settlement cancels the nudge. A nudge contains the total quiet-direct pending count and inbox guidance but no mail body. It does not advance `presentedAt`.
 
-Nudge deduplication keys on durable custom-message entries: `messageIds` is the oldest-first, previously unnudged cohort from one complete mailbox snapshot, and accepted IDs suppress duplicate nudges until matching entries become durable (all current session entries reconstruct durable receipts on reload); `pendingCount` includes older already nudged quiet mail that remains unpresented. Exactly-once behavior across concurrently active runtimes sharing one mailbox is not guaranteed.
+Durable custom-message entries are the authority for nudge deduplication, and current session history reconstructs those durable receipts after reload. The pending count still includes quiet mail that was nudged but remains unpresented. Exactly-once behavior across concurrently active runtimes sharing one mailbox is not guaranteed.
 
 The Pi adapter exposes the current mailbox's unpresented `To` plus `Cc` count through an informational footer status such as `mail 2`. The footer and Web UI are passive indicators and must not change delivery or presentation state.
 
 ### Reminder configuration
 
-The effective reminder source is resolved in this order: mailbox override, trusted project `npm:pi-mail.reminder`, global `npm:pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active `ctx.cwd` through Pi's SettingsManager and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
+The effective reminder source is resolved in this order: mailbox override, trusted project `npm:pi-mail.reminder`, global `npm:pi-mail.reminder`, then built-in `off`. Settings defaults are read-only process configuration and are never copied into an inheriting peer record. Project settings come from the active worktree and are ignored when the project is untrusted. Invalid scopes warn once per loaded runtime and fall through independently.
 
 Linked worktrees share peer records but may resolve different trusted project defaults. Therefore cross-mailbox observation never applies the current runtime's default to another inheriting mailbox: the current mailbox and explicit peer overrides expose canonical reminder status, while a non-self mailbox with no override exposes `reminder: null`. This means the observer cannot know that session's runtime-local effective policy; it is not an additional policy mode.
 
@@ -100,7 +97,7 @@ Downgrading is not guaranteed to preserve version 2 reminder state: an older Pi 
 
 ### Model-facing views
 
-Every model-facing message view, including Pi-injected peer and human messages, must include the message creation timestamp so an Agent can establish message order. Views expose the complete usable message ID exactly once and omit internal thread IDs; routine views use aliases without repeating session IDs, while session IDs appear only in discovery, status, or ambiguity resolution where they are actionable. The exact preview character limit is an implementation detail; the bound prevents one long mailbox, wait result, or thread lookup from flooding model context.
+Every model-facing message view, including Pi-injected peer and human messages, must include the message creation timestamp so an Agent can establish message order. Views expose the complete usable message ID exactly once and omit internal thread IDs; routine views use aliases without repeating session IDs, while session IDs appear only in discovery, status, or ambiguity resolution where they are actionable. Previews are bounded so one long mailbox, wait result, or thread lookup cannot flood model context.
 
 `presentedAt` advancement is per-view: `inbox` with a specific `message_id` normally marks its delivery presented; `inbox` list, `thread`, `sent`, and `wait` never mark deliveries presented. Full message views include the delivery kind when available.
 
@@ -110,7 +107,7 @@ Mail sent from the Web UI must be injected through Pi's user-message API on an a
 
 `wait` watches the whole mailbox, not a sender, thread, task, or workflow state. It is an inbox-level synchronization primitive, not an orchestration primitive.
 
-Before blocking, it snapshots current delivery IDs and checks existing unpresented mail. If pending mail already exists, it returns immediately. Otherwise any delivery absent from that snapshot satisfies the wait. This ordering preserves the no-lost-wakeup property when a message arrives around wait startup.
+Pending mail that exists when `wait` begins returns immediately, and mail arriving around wait startup must not be lost between the initial check and blocking. Otherwise, any newly observed delivery satisfies the wait.
 
 A wait is always finite and abortable. The adapter default is 60 seconds and the public tool caps `timeout_seconds` at 300 seconds. A timeout means only that no mail satisfied the wait during that interval. Returning a preview does not advance `presentedAt`, so an ignored pending message may satisfy a later `wait` again until the agent explicitly inspects its inbox.
 

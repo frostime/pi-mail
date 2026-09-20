@@ -106,7 +106,7 @@ test("heartbeat advertises identity so peers can discover and address an unregis
 
   await registered.init({ alias: "registrar" });
   // The fresh session only heartbeats; it has no peer record.
-  await fresh.heartbeat();
+  await fresh.syncSessionName("Fresh review");
   assert.equal(await fresh.store.getPeer(fresh.sessionId), null);
 
   const discovered = (await registered.discover()).find((peer) => peer.id === fresh.sessionId);
@@ -118,8 +118,35 @@ test("heartbeat advertises identity so peers can discover and address an unregis
   const sent = await registered.send({ to: [fresh.sessionId], body: "Addressed without registration." });
   // ...and the durable write created the store plus the recipient's record.
   assert.ok(fsSync.existsSync(path.join(cwd, ".pi", "mails")));
-  assert.ok(await fresh.store.getPeer(fresh.sessionId));
+  assert.equal((await fresh.store.getPeer(fresh.sessionId))?.sessionName, "Fresh review");
   assert.ok((await inbox(fresh)).some((message) => message.id === sent.id));
+});
+
+test("multiple runtimes of one unregistered session resolve as one mailbox", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-shared-unregistered-"));
+  const presenceRoot = { root: path.join(cwd, "presence-bucket"), projectRoot: cwd };
+  const sender = new MailService({
+    cwd,
+    sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    runtimeId: "runtime-sender",
+    presenceTtlMs: 60_000,
+    presenceRoot,
+  });
+  const sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const first = new MailService({ cwd, sessionId, runtimeId: "runtime-shared-a", presenceTtlMs: 60_000, presenceRoot });
+  const second = new MailService({ cwd, sessionId, runtimeId: "runtime-shared-b", presenceTtlMs: 60_000, presenceRoot });
+
+  await sender.init({ alias: "sender" });
+  await first.heartbeat();
+  await second.heartbeat();
+  const address = (await first.status()).alias;
+  const sent = await sender.send({
+    to: [address, shortSessionId(sessionId)],
+    body: "Both addresses identify one mailbox.",
+  });
+
+  assert.deepEqual(sent.to.map((recipient) => recipient.id), [sessionId]);
+  assert.equal((await inbox(first))[0].id, sent.id);
 });
 
 test("discovery is active-only by default but preserves historical peers", async () => {
@@ -175,6 +202,41 @@ test("legacy timestamp-prefix default aliases migrate to generated aliases", asy
 
   const peer = await service.init();
   assert.equal(peer.alias, "S716");
+});
+
+test("a tombstoned session re-registers on its first durable write", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-tombstone-resume-"));
+  const resumed = new MailService({
+    cwd,
+    sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    runtimeId: "runtime-resumed",
+    presenceTtlMs: 60_000,
+  });
+  const recipient = new MailService({
+    cwd,
+    sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    runtimeId: "runtime-recipient",
+    presenceTtlMs: 60_000,
+  });
+  await recipient.init({ alias: "recipient" });
+  const timestamp = new Date().toISOString();
+  await resumed.store.putPeer({
+    version: 2,
+    id: resumed.sessionId,
+    alias: "resumed",
+    cwd,
+    discoverable: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    deletedAt: timestamp,
+  });
+
+  await resumed.send({ to: ["recipient"], body: "The mailbox is active again." });
+
+  const peer = await resumed.store.getPeer(resumed.sessionId);
+  assert.ok(peer);
+  assert.equal(peer.alias, "resumed");
+  assert.equal(Object.hasOwn(peer, "deletedAt"), false);
 });
 
 test("new sessions receive a compact generated alias and avoid collisions", async () => {
@@ -543,7 +605,8 @@ test("deleting a recipient mailbox preserves mail still owned by the sender", as
   assert.ok((await a.listSent()).some((item) => item.id === message.id));
 
   const resumed = new MailService({ cwd, sessionId: b.sessionId, runtimeId: "runtime-b-resumed", presenceTtlMs: 60_000 });
-  await resumed.init();
+  await resumed.heartbeat();
+  assert.equal(await resumed.store.getPeer(resumed.sessionId), null);
   assert.equal((await inbox(resumed)).length, 0);
   assert.ok((await a.discover()).some((peer) => peer.id === b.sessionId));
 });
@@ -1023,6 +1086,18 @@ test("bounded inbox reads present only returned deliveries", async () => {
   const deliveries = await Promise.all([first.id, second.id].map((id) => b.store.getDelivery(b.sessionId, id)));
   assert.equal(deliveries.filter((delivery) => delivery?.presentedAt).length, 1);
   assert.equal((await b.listUnpresentedForAttention()).length, 1);
+});
+
+test("durable writes normalize storage availability errors", async () => {
+  const { a } = await makeServices();
+  a.store.tryCreateMessage = async () => {
+    throw Object.assign(new Error("disk full"), { code: "ENOSPC" });
+  };
+
+  await assert.rejects(
+    () => a.send({ to: ["bob"], body: "This write cannot complete." }),
+    /Pi Mail disabled: cannot write to .*\(ENOSPC\)\./,
+  );
 });
 
 test("recipient delivery time is recorded when each delivery is created", async () => {

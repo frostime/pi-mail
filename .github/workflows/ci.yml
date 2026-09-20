@@ -20,7 +20,7 @@ jobs:
           node-version: 24.x
       - name: Install dependencies
         run: npm ci
-      - name: Run tests
-        run: npm test
+      - name: Run checks
+        run: npm run check
       - name: Check package contents
         run: npm run pack:check

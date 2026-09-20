@@ -1,5 +1,6 @@
 import {
   mkdir,
+  readFile,
   readdir,
   rename,
   rm,
@@ -23,6 +24,11 @@ import type {
 } from "./types.ts";
 
 const STORE_DIRECTORIES = ["peers", "messages", "mailboxes"] as const;
+const ABSENT_OR_STRUCTURALLY_BLOCKED_READ_CODES = new Set([
+  "ENAMETOOLONG",
+  "ENOENT",
+  "ENOTDIR",
+]);
 /** Presence storage left behind by pre-0.11 runtimes, kept cleanable. */
 const LEGACY_PRESENCE_DIRECTORY = "presence";
 /**
@@ -110,9 +116,11 @@ export class FsMailStore {
   }
 
   async getPeer(peerId: string): Promise<PeerRecordV2 | null> {
-    const file = this.peerFile(peerId);
-    const value = await readJson(file);
-    return value === null ? null : decodePeerRecord(value, file);
+    return this.readAbsentOrBlockedAs<PeerRecordV2 | null>(null, async () => {
+      const file = this.peerFile(peerId);
+      const value = await readJson(file);
+      return value === null ? null : decodePeerRecord(value, file);
+    });
   }
 
   async putPeer(peer: PeerRecordV2): Promise<void> {
@@ -120,23 +128,18 @@ export class FsMailStore {
   }
 
   async listPeers(): Promise<PeerRecordV2[]> {
-    const dir = path.join(this.root, "peers");
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    const peers: PeerRecordV2[] = [];
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
-      const file = path.join(dir, name);
-      const value = await readJson(file);
-      if (value !== null) peers.push(decodePeerRecord(value, file));
-    }
-    return peers;
+    return this.readAbsentOrBlockedAs<PeerRecordV2[]>([], async () => {
+      const dir = path.join(this.root, "peers");
+      const names = await readdir(dir);
+      const peers: PeerRecordV2[] = [];
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const file = path.join(dir, name);
+        const value = await readJson(file);
+        if (value !== null) peers.push(decodePeerRecord(value, file));
+      }
+      return peers;
+    });
   }
 
   async removePeer(peerId: string): Promise<void> {
@@ -163,11 +166,11 @@ export class FsMailStore {
   }
 
   async getMessage(messageId: string): Promise<MessageRecord | null> {
-    return readJson(this.messageFile(messageId));
+    return this.readAbsentOrBlockedAs(null, () => readJson(this.messageFile(messageId)));
   }
 
   async listMessages(): Promise<MessageRecord[]> {
-    return listJson(path.join(this.root, "messages"));
+    return this.readAbsentOrBlockedAs([], () => listJson(path.join(this.root, "messages")));
   }
 
   async removeMessage(messageId: string): Promise<void> {
@@ -182,28 +185,22 @@ export class FsMailStore {
   }
 
   async getDelivery(recipientId: string, messageId: string): Promise<DeliveryRecord | null> {
-    return readJson(this.deliveryFile(recipientId, messageId));
+    return this.readAbsentOrBlockedAs(null, () => readJson(this.deliveryFile(recipientId, messageId)));
   }
 
   async listDeliveries(recipientId: string): Promise<DeliveryRecord[]> {
     assertSafeId(recipientId, "recipient id");
-    return listJson(path.join(this.root, "mailboxes", recipientId));
+    return this.readAbsentOrBlockedAs([], () => listJson(path.join(this.root, "mailboxes", recipientId)));
   }
 
   async listDeliveryIds(recipientId: string): Promise<string[]> {
     assertSafeId(recipientId, "recipient id");
-    const dir = path.join(this.root, "mailboxes", recipientId);
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    return names
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => name.slice(0, -".json".length));
+    return this.readAbsentOrBlockedAs([], async () => {
+      const names = await readdir(path.join(this.root, "mailboxes", recipientId));
+      return names
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => name.slice(0, -".json".length));
+    });
   }
 
   async removeMailbox(recipientId: string): Promise<void> {
@@ -265,6 +262,15 @@ export class FsMailStore {
         }
       }
       await rmdir(sessionDir).catch(() => {});
+    }
+  }
+
+  private async readAbsentOrBlockedAs<T>(fallback: T, read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      if (ABSENT_OR_STRUCTURALLY_BLOCKED_READ_CODES.has(errorCode(error) ?? "")) return fallback;
+      throw error;
     }
   }
 
