@@ -923,16 +923,13 @@ export class MailService {
     ccIds = unique(ccIds).filter((id) => !toIds.includes(id));
     if (toIds.length === 0) throw new Error("Message has no To recipients after resolution");
 
-    // Resolve the sender alias only after registration: a lazily registering
-    // session may gain its collision-checked alias during ensureRegistered.
     let senderAlias = input.senderAlias;
     if (input.senderKind === "session") {
-      senderAlias = (await this.store.getPeer(input.senderId))?.alias ?? senderAlias;
-    }
-
-    if (input.senderKind === "session") {
       // A session's first durable mail write registers its mailbox record.
+      // Resolve the sender alias only after registration: a lazily registering
+      // session may gain its collision-checked alias during ensureRegistered.
       await this.ensureRegistered();
+      senderAlias = (await this.store.getPeer(input.senderId))?.alias ?? senderAlias;
       await this.makeMailboxDurable(input.senderId);
     } else {
       await this.ensureStore();
