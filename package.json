@@ -1,6 +1,6 @@
 {
   "name": "pi-mail",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Local mailbox communication for independent Pi coding sessions, with peer discovery and a human Web UI.",
   "author": "frostime",
   "license": "GPL-3.0-only",
@@ -54,7 +54,8 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test",
     "pack:check": "npm pack --dry-run"
   },
   "devDependencies": {

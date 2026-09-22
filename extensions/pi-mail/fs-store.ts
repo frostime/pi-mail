@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   mkdir,
   readFile,
@@ -6,90 +5,44 @@ import {
   rename,
   rm,
   rmdir,
+  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 
+import {
+  assertSafeId,
+  atomicWriteJson,
+  errorCode,
+  listJson,
+  readJson,
+} from "./store-util.ts";
 import { decodePeerRecord, type PeerRecordV2 } from "./peer-record.ts";
 import type {
   DeliveryRecord,
   MessageRecord,
-  PresenceRecord,
 } from "./types.ts";
 
-const SAFE_ID = /^[A-Za-z0-9._-]+$/;
-const STORE_DIRECTORIES = ["peers", "presence", "messages", "mailboxes"] as const;
+const STORE_DIRECTORIES = ["peers", "messages", "mailboxes"] as const;
+const ABSENT_OR_STRUCTURALLY_BLOCKED_READ_CODES = new Set([
+  "ENAMETOOLONG",
+  "ENOENT",
+  "ENOTDIR",
+]);
+/** Presence storage left behind by pre-0.11 runtimes, kept cleanable. */
+const LEGACY_PRESENCE_DIRECTORY = "presence";
+/**
+ * A running pre-0.11 runtime rewrites its presence file every few seconds, so
+ * a file untouched for this long belongs to a crashed runtime; the generous
+ * threshold protects slow or suspended sessions from being pruned.
+ */
+const LEGACY_PRESENCE_STALE_MS = 300_000;
 const STORE_IGNORE_CONTENT = "# Pi Mail runtime data\n*\n";
 const MANAGED_IGNORE_CONTENTS = new Set([
   STORE_IGNORE_CONTENT,
   "# Pi Mail runtime data\n*\n!.gitignore\n",
   "# Pi Mail runtime data\n*\n.gitignore\n",
 ]);
-
-function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
-}
-
-function assertSafeId(value: string, label = "id"): void {
-  if (!SAFE_ID.test(value)) {
-    throw new Error(`Invalid ${label}`);
-  }
-}
-
-async function readJson<T>(file: string): Promise<T | null> {
-  try {
-    return JSON.parse(await readFile(file, "utf8")) as T;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return null;
-    throw error;
-  }
-}
-
-async function atomicWriteJson(file: string, value: unknown): Promise<void> {
-  await mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-
-  try {
-    await rename(tmp, file);
-  } catch (error) {
-    // rename() is atomic on the local filesystems we target, but Windows does
-    // not consistently replace an existing destination. The fallback keeps
-    // the update local to one delivery/presence record instead of introducing
-    // a cross-process lock protocol.
-    if (errorCode(error) === "EEXIST" || errorCode(error) === "EPERM") {
-      await rm(file, { force: true });
-      await rename(tmp, file);
-      return;
-    }
-
-    await rm(tmp, { force: true });
-    throw error;
-  }
-}
-
-async function listJson<T>(dir: string): Promise<T[]> {
-  let names: string[];
-  try {
-    names = await readdir(dir);
-  } catch (error) {
-    if (errorCode(error) === "ENOENT") return [];
-    throw error;
-  }
-
-  const values: T[] = [];
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const value = await readJson<T>(path.join(dir, name));
-    if (value) values.push(value);
-  }
-  return values;
-}
 
 export class FsMailStore {
   readonly root: string;
@@ -102,6 +55,11 @@ export class FsMailStore {
     for (const dir of STORE_DIRECTORIES) {
       await mkdir(path.join(this.root, dir), { recursive: true });
     }
+    // A store created by an older Pi Mail version still owns a presence
+    // directory inside the project; it is obsolete now that presence lives in
+    // the user temp area, so prune crashed-runtime residue and clear it.
+    await this.pruneLegacyPresence();
+    await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY));
     await this.ensureIgnoreFile();
   }
 
@@ -109,6 +67,12 @@ export class FsMailStore {
   async removeIfEmpty(): Promise<boolean> {
     for (const dir of STORE_DIRECTORIES) {
       if (!await this.removeDirectoryIfEmpty(path.join(this.root, dir))) return false;
+    }
+    // Legacy in-project presence data is not mail data; stale residue from
+    // crashed old-version runtimes must not block the store cleanup.
+    await this.pruneLegacyPresence();
+    if (!await this.removeDirectoryIfEmpty(path.join(this.root, LEGACY_PRESENCE_DIRECTORY))) {
+      return false;
     }
 
     let entries: string[];
@@ -152,9 +116,11 @@ export class FsMailStore {
   }
 
   async getPeer(peerId: string): Promise<PeerRecordV2 | null> {
-    const file = this.peerFile(peerId);
-    const value = await readJson(file);
-    return value === null ? null : decodePeerRecord(value, file);
+    return this.readAbsentOrBlockedAs<PeerRecordV2 | null>(null, async () => {
+      const file = this.peerFile(peerId);
+      const value = await readJson(file);
+      return value === null ? null : decodePeerRecord(value, file);
+    });
   }
 
   async putPeer(peer: PeerRecordV2): Promise<void> {
@@ -162,68 +128,22 @@ export class FsMailStore {
   }
 
   async listPeers(): Promise<PeerRecordV2[]> {
-    const dir = path.join(this.root, "peers");
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    const peers: PeerRecordV2[] = [];
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
-      const file = path.join(dir, name);
-      const value = await readJson(file);
-      if (value !== null) peers.push(decodePeerRecord(value, file));
-    }
-    return peers;
+    return this.readAbsentOrBlockedAs<PeerRecordV2[]>([], async () => {
+      const dir = path.join(this.root, "peers");
+      const names = await readdir(dir);
+      const peers: PeerRecordV2[] = [];
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const file = path.join(dir, name);
+        const value = await readJson(file);
+        if (value !== null) peers.push(decodePeerRecord(value, file));
+      }
+      return peers;
+    });
   }
 
   async removePeer(peerId: string): Promise<void> {
     await rm(this.peerFile(peerId), { force: true });
-  }
-
-  async putPresence(presence: PresenceRecord): Promise<void> {
-    await atomicWriteJson(
-      this.presenceFile(presence.sessionId, presence.runtimeId),
-      presence,
-    );
-  }
-
-  async removePresence(sessionId: string, runtimeId: string): Promise<void> {
-    await rm(this.presenceFile(sessionId, runtimeId), { force: true });
-
-    try {
-      await rmdir(path.join(this.root, "presence", sessionId));
-    } catch {
-      // A non-empty directory means another runtime for this session is still
-      // present and therefore must remain discoverable.
-    }
-  }
-
-  async removeSessionPresence(sessionId: string): Promise<void> {
-    assertSafeId(sessionId, "session id");
-    await rm(path.join(this.root, "presence", sessionId), { recursive: true, force: true });
-  }
-
-  async listPresence(): Promise<PresenceRecord[]> {
-    const base = path.join(this.root, "presence");
-    let sessionDirs;
-    try {
-      sessionDirs = await readdir(base, { withFileTypes: true });
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    const values: PresenceRecord[] = [];
-    for (const entry of sessionDirs) {
-      if (!entry.isDirectory()) continue;
-      values.push(...await listJson<PresenceRecord>(path.join(base, entry.name)));
-    }
-    return values;
   }
 
   async tryCreateMessage(message: MessageRecord): Promise<boolean> {
@@ -246,11 +166,11 @@ export class FsMailStore {
   }
 
   async getMessage(messageId: string): Promise<MessageRecord | null> {
-    return readJson(this.messageFile(messageId));
+    return this.readAbsentOrBlockedAs(null, () => readJson(this.messageFile(messageId)));
   }
 
   async listMessages(): Promise<MessageRecord[]> {
-    return listJson(path.join(this.root, "messages"));
+    return this.readAbsentOrBlockedAs([], () => listJson(path.join(this.root, "messages")));
   }
 
   async removeMessage(messageId: string): Promise<void> {
@@ -265,28 +185,22 @@ export class FsMailStore {
   }
 
   async getDelivery(recipientId: string, messageId: string): Promise<DeliveryRecord | null> {
-    return readJson(this.deliveryFile(recipientId, messageId));
+    return this.readAbsentOrBlockedAs(null, () => readJson(this.deliveryFile(recipientId, messageId)));
   }
 
   async listDeliveries(recipientId: string): Promise<DeliveryRecord[]> {
     assertSafeId(recipientId, "recipient id");
-    return listJson(path.join(this.root, "mailboxes", recipientId));
+    return this.readAbsentOrBlockedAs([], () => listJson(path.join(this.root, "mailboxes", recipientId)));
   }
 
   async listDeliveryIds(recipientId: string): Promise<string[]> {
     assertSafeId(recipientId, "recipient id");
-    const dir = path.join(this.root, "mailboxes", recipientId);
-    let names: string[];
-    try {
-      names = await readdir(dir);
-    } catch (error) {
-      if (errorCode(error) === "ENOENT") return [];
-      throw error;
-    }
-
-    return names
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => name.slice(0, -".json".length));
+    return this.readAbsentOrBlockedAs([], async () => {
+      const names = await readdir(path.join(this.root, "mailboxes", recipientId));
+      return names
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => name.slice(0, -".json".length));
+    });
   }
 
   async removeMailbox(recipientId: string): Promise<void> {
@@ -297,11 +211,6 @@ export class FsMailStore {
   async removeMailboxIfEmpty(recipientId: string): Promise<boolean> {
     assertSafeId(recipientId, "recipient id");
     return this.removeDirectoryIfEmpty(path.join(this.root, "mailboxes", recipientId));
-  }
-
-  async removeSessionPresenceIfEmpty(sessionId: string): Promise<boolean> {
-    assertSafeId(sessionId, "session id");
-    return this.removeDirectoryIfEmpty(path.join(this.root, "presence", sessionId));
   }
 
   async updateDelivery(
@@ -315,6 +224,54 @@ export class FsMailStore {
     const next = { ...current, ...update };
     await this.putDelivery(next);
     return next;
+  }
+
+  /**
+   * Opportunistically delete legacy presence files whose owning runtime is
+   * provably dead (stale mtime), so crash residue cannot block store cleanup
+   * forever. Read failures are swallowed: this cleanup is not load-bearing.
+   */
+  private async pruneLegacyPresence(): Promise<void> {
+    const base = path.join(this.root, LEGACY_PRESENCE_DIRECTORY);
+    let sessionDirs;
+    try {
+      sessionDirs = await readdir(base, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    const cutoff = Date.now() - LEGACY_PRESENCE_STALE_MS;
+    for (const entry of sessionDirs) {
+      if (!entry.isDirectory()) continue;
+      const sessionDir = path.join(base, entry.name);
+
+      let names;
+      try {
+        names = await readdir(sessionDir);
+      } catch {
+        continue;
+      }
+
+      for (const name of names) {
+        const file = path.join(sessionDir, name);
+        try {
+          const info = await stat(file);
+          if (info.mtimeMs < cutoff) await rm(file, { force: true });
+        } catch {
+          // Unreadable or already removed by a concurrent prune; retry later.
+        }
+      }
+      await rmdir(sessionDir).catch(() => {});
+    }
+  }
+
+  private async readAbsentOrBlockedAs<T>(fallback: T, read: () => Promise<T>): Promise<T> {
+    try {
+      return await read();
+    } catch (error) {
+      if (ABSENT_OR_STRUCTURALLY_BLOCKED_READ_CODES.has(errorCode(error) ?? "")) return fallback;
+      throw error;
+    }
   }
 
   private async removeDirectoryIfEmpty(directory: string): Promise<boolean> {
@@ -349,12 +306,6 @@ export class FsMailStore {
   private peerFile(peerId: string): string {
     assertSafeId(peerId, "peer id");
     return path.join(this.root, "peers", `${peerId}.json`);
-  }
-
-  private presenceFile(sessionId: string, runtimeId: string): string {
-    assertSafeId(sessionId, "session id");
-    assertSafeId(runtimeId, "runtime id");
-    return path.join(this.root, "presence", sessionId, `${runtimeId}.json`);
   }
 
   private messageFile(messageId: string): string {

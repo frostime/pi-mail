@@ -8,6 +8,7 @@ import {
   type ReminderStatus,
 } from "./attention-policy.ts";
 import { FsMailStore } from "./fs-store.ts";
+import { FsPresenceStore } from "./presence-store.ts";
 import {
   generateMessageId,
   isLegacyUuidMessageId,
@@ -18,7 +19,8 @@ import {
   shortSessionId,
 } from "./identity.ts";
 import type { PeerRecordV2, StoredReminderOverride } from "./peer-record.ts";
-import { resolveMailRoot } from "./project-root.ts";
+import { resolveMailRoot, resolvePresenceRoot } from "./project-root.ts";
+import { errorCode } from "./store-util.ts";
 import type {
   DeliveryRecord,
   DiscoveredPeer,
@@ -27,6 +29,7 @@ import type {
   MailStatus,
   MessageRecord,
   PeerAddress,
+  PresenceRecord,
   ProjectMessageSummary,
   RecipientKind,
   SentMessageSummary,
@@ -46,12 +49,41 @@ const GENERATED_ALIAS_COUNT = 1_000;
 export const HUMAN_PRINCIPAL_ID = "human-local";
 export const HUMAN_PRINCIPAL_ALIAS = "user";
 
+const UNAVAILABLE_STORAGE_CODES = new Set([
+  "EACCES",
+  "EDQUOT",
+  "EEXIST",
+  "EISDIR",
+  "ENAMETOOLONG",
+  "ENOSPC",
+  "ENOTDIR",
+  "EPERM",
+  "EROFS",
+]);
+
+export class MailStorageUnavailableError extends Error {
+  constructor(mailRoot: string, options: { cause: unknown }) {
+    const code = typeof options.cause === "object" && options.cause !== null && "code" in options.cause
+      ? String((options.cause as { code?: unknown }).code)
+      : undefined;
+    super(`Pi Mail disabled: cannot write to "${mailRoot}"${code ? ` (${code})` : ""}.`, options);
+    this.name = "MailStorageUnavailableError";
+  }
+}
+
+/** Interval between opportunistic sweeps of stale presence files. */
+const PRESENCE_SWEEP_INTERVAL_MS = 60_000;
+/** Minimum age of a presence file before an opportunistic sweep may delete it. */
+const PRESENCE_STALE_MS = 300_000;
+
 export interface MailServiceOptions {
   cwd: string;
   sessionId: string;
   runtimeId?: string;
   presenceTtlMs?: number;
   defaultReminder?: EffectiveReminderPolicy;
+  /** Overrides the ephemeral presence location; tests use this for isolation. */
+  presenceRoot?: { root: string; projectRoot: string };
 }
 
 export interface SendMailInput {
@@ -134,6 +166,13 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+function latestPresence(presences: PresenceRecord[]): PresenceRecord | undefined {
+  return presences.reduce<PresenceRecord | undefined>(
+    (latest, presence) => !latest || presence.lastSeenAt > latest.lastSeenAt ? presence : latest,
+    undefined,
+  );
+}
+
 function makePeerDurable(peer: PeerRecordV2): PeerRecordV2 {
   if (peer.provisional !== true) return peer;
   const next = { ...peer, updatedAt: nowIso() };
@@ -202,8 +241,12 @@ export class MailService {
   readonly presenceTtlMs: number;
   readonly root: string;
   readonly store: FsMailStore;
+  readonly presenceStore: FsPresenceStore;
   readonly defaultReminder: EffectiveReminderPolicy;
   private peerMutationQueue: Promise<void> = Promise.resolve();
+  /** Pi session display name seen most recently; advertised through presence. */
+  private currentSessionName: string | undefined;
+  private lastSweepAt = 0;
 
   constructor({
     cwd,
@@ -211,6 +254,7 @@ export class MailService {
     runtimeId = randomUUID(),
     presenceTtlMs = DEFAULT_PRESENCE_TTL_MS,
     defaultReminder = { policy: { kind: "off" }, source: "built-in" },
+    presenceRoot,
   }: MailServiceOptions) {
     if (!sessionId) throw new Error("sessionId is required");
 
@@ -221,10 +265,15 @@ export class MailService {
     this.defaultReminder = defaultReminder;
     this.root = resolveMailRoot(cwd);
     this.store = new FsMailStore(this.root);
+    const presence = presenceRoot ?? resolvePresenceRoot(cwd);
+    this.presenceStore = new FsPresenceStore(presence.root, presence.projectRoot);
   }
 
   async init(options: { alias?: string; discoverable?: boolean; sessionName?: string | null } = {}): Promise<PeerRecordV2> {
-    await this.store.init();
+    if (options.sessionName !== undefined) {
+      this.currentSessionName = normalizeSessionName(options.sessionName);
+    }
+    await this.writeStore(() => this.store.init());
 
     const timestamp = nowIso();
     const existing = await this.store.getPeer(this.sessionId);
@@ -253,38 +302,91 @@ export class MailService {
       updatedAt: timestamp,
     };
 
-    await this.store.putPeer(peer);
+    await this.writeStore(() => this.store.putPeer(peer));
     await this.heartbeat();
     return peer;
   }
 
+  /**
+   * Create the durable store and this session's peer record if missing.
+   *
+   * Sessions register lazily: starting a session only writes presence to the
+   * temp area, and this is the first durable write path. The delay keeps the
+   * project directory clean until real mail value exists, while presence
+   * keeps the session discoverable and addressable in the meantime.
+   */
+  private async ensureRegistered(): Promise<void> {
+    const existing = await this.store.getPeer(this.sessionId);
+    if (existing && !existing.deletedAt) return;
+    await this.init({ sessionName: this.currentSessionName });
+  }
+
+  /** Create the durable store directories if the session is about to write mail data. */
+  private async ensureStore(): Promise<void> {
+    await this.writeStore(() => this.store.init());
+  }
+
+  /** Normalize storage availability failures without hiding data or programming errors. */
+  private async writeStore<T>(write: () => Promise<T>): Promise<T> {
+    try {
+      return await write();
+    } catch (error) {
+      if (error instanceof MailStorageUnavailableError) throw error;
+      if (UNAVAILABLE_STORAGE_CODES.has(errorCode(error) ?? "")) {
+        throw new MailStorageUnavailableError(this.root, { cause: error });
+      }
+      throw error;
+    }
+  }
+
   async heartbeat(): Promise<void> {
     const timestamp = nowIso();
+    const peer = await this.store.getPeer(this.sessionId);
+    if (peer?.sessionName) this.currentSessionName = peer.sessionName;
     const current = await this.currentPresence();
-    await this.store.putPresence({
+    const presence: PresenceRecord = {
       version: 1,
       sessionId: this.sessionId,
       runtimeId: this.runtimeId,
       pid: process.pid,
       cwd: this.cwd,
+      // Sessions without a durable peer record must remain discoverable and
+      // addressable, so the heartbeat itself advertises the mailbox identity.
+      alias: peer?.alias ?? defaultAlias(this.sessionId, await this.store.listPeers()),
+      ...(this.currentSessionName ? { sessionName: this.currentSessionName } : {}),
       startedAt: current?.startedAt ?? timestamp,
       lastSeenAt: timestamp,
-    });
+    };
+    await this.presenceStore.putPresence(presence);
+    await this.sweepPresenceOccasionally();
+  }
+
+  private async sweepPresenceOccasionally(): Promise<void> {
+    const nowMs = Date.now();
+    if (nowMs - this.lastSweepAt < PRESENCE_SWEEP_INTERVAL_MS) return;
+    this.lastSweepAt = nowMs;
+    await this.presenceStore.sweepStale(Math.max(this.presenceTtlMs * 15, PRESENCE_STALE_MS));
   }
 
   async syncSessionName(sessionName: string | null | undefined): Promise<void> {
     const nextName = normalizeSessionName(sessionName);
-    await this.updateCurrentPeer((peer) => {
-      if ((peer.sessionName ?? undefined) === nextName) return peer;
-      const next = { ...peer, updatedAt: nowIso() };
-      if (nextName) next.sessionName = nextName;
-      else delete next.sessionName;
-      return next;
-    });
+    this.currentSessionName = nextName;
+    const peer = await this.store.getPeer(this.sessionId);
+    if (peer && (peer.sessionName ?? undefined) !== nextName) {
+      await this.updateCurrentPeer((current) => {
+        const next = { ...current, updatedAt: nowIso() };
+        if (nextName) next.sessionName = nextName;
+        else delete next.sessionName;
+        return next;
+      });
+    }
+    // Mirror the name into presence so discovery stays current even when the
+    // peer record does not exist yet.
+    await this.heartbeat();
   }
 
   async close(options: { discardUnusedMailbox?: boolean } = {}): Promise<void> {
-    await this.store.removePresence(this.sessionId, this.runtimeId);
+    await this.presenceStore.removePresence(this.sessionId, this.runtimeId);
     if (options.discardUnusedMailbox) {
       await this.discardUnusedMailbox();
       await this.store.removeIfEmpty();
@@ -296,6 +398,7 @@ export class MailService {
       throw new Error("configure requires alias and/or discoverable");
     }
     const alias = options.alias === undefined ? undefined : normalizeAlias(options.alias)!;
+    await this.ensureRegistered();
     return this.updateCurrentPeer((peer) => {
       const nextAlias = alias ?? peer.alias;
       const nextDiscoverable = options.discoverable ?? peer.discoverable;
@@ -317,6 +420,7 @@ export class MailService {
       : policy.kind === "after-minutes" ? policy.minutes : policy.kind;
     if (stored !== undefined) parseReminderPolicy(stored);
 
+    await this.ensureRegistered();
     return this.updateCurrentPeer((peer) => {
       const current = Object.hasOwn(peer, "reminder") ? peer.reminder : undefined;
       if (current === stored) return makePeerDurable(peer);
@@ -413,25 +517,19 @@ export class MailService {
     includeUndiscoverable: boolean;
   }): Promise<DiscoveredPeer[]> {
     const peers = await this.store.listPeers();
-    const activePresence = await this.activePresence();
-    const presenceBySession = new Map<string, typeof activePresence>();
+    const presenceBySession = await this.activePresenceBySession();
 
-    for (const presence of activePresence) {
-      const list = presenceBySession.get(presence.sessionId) ?? [];
-      list.push(presence);
-      presenceBySession.set(presence.sessionId, list);
-    }
+    const visible = (id: string): boolean =>
+      (options.includeSelf || id !== this.sessionId);
 
-    return peers
+    const peerEntries = peers
       .filter((peer) => !peer.deletedAt)
-      .filter((peer) => options.includeSelf || peer.id !== this.sessionId)
+      .filter((peer) => visible(peer.id))
       .filter((peer) => options.includeUndiscoverable || peer.discoverable !== false)
       .filter((peer) => options.includeInactive || presenceBySession.has(peer.id))
       .map((peer) => {
         const presences = presenceBySession.get(peer.id) ?? [];
-        const latest = presences
-          .slice()
-          .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))[0];
+        const latest = latestPresence(presences);
 
         return {
           id: peer.id,
@@ -444,19 +542,41 @@ export class MailService {
           lastSeenAt: latest?.lastSeenAt ?? null,
           self: peer.id === this.sessionId,
         };
-      })
-      .sort((a, b) => {
-        if (a.active !== b.active) return a.active ? -1 : 1;
-        if (a.self !== b.self) return a.self ? -1 : 1;
-        return a.alias.localeCompare(b.alias);
       });
+
+    // Sessions without a durable peer record advertise identity through their
+    // heartbeat; they are always active by definition.
+    const presenceOnlyEntries = [...presenceBySession]
+      .filter(([id]) => !peers.some((peer) => peer.id === id && !peer.deletedAt))
+      .filter(([id]) => visible(id))
+      .map(([id, presences]) => {
+        const latest = latestPresence(presences);
+
+        return {
+          id,
+          shortId: shortSessionId(id),
+          alias: latest?.alias ?? shortSessionId(id),
+          sessionName: latest?.sessionName ?? null,
+          active: true,
+          runtimeCount: presences.length,
+          cwd: latest?.cwd ?? this.cwd,
+          lastSeenAt: latest?.lastSeenAt ?? null,
+          self: id === this.sessionId,
+        };
+      });
+
+    return [...peerEntries, ...presenceOnlyEntries].sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      if (a.self !== b.self) return a.self ? -1 : 1;
+      return a.alias.localeCompare(b.alias);
+    });
   }
 
   async send(input: SendMailInput = {}): Promise<MailMessage> {
     return this.sendFrom({
       senderKind: "session",
       senderId: this.sessionId,
-      senderAlias: (await this.store.getPeer(this.sessionId))?.alias ?? defaultAlias(this.sessionId, []),
+      senderAlias: defaultAlias(this.sessionId, []),
       ...input,
     });
   }
@@ -509,9 +629,9 @@ export class MailService {
 
     const deleted: PeerAddress[] = [];
     for (const peer of targets) {
-      await this.store.removeMailbox(peer.id);
-      await this.store.removeSessionPresence(peer.id);
-      await this.store.removePeer(peer.id);
+      await this.writeStore(() => this.store.removeMailbox(peer.id));
+      await this.presenceStore.removeSessionPresence(peer.id);
+      await this.writeStore(() => this.store.removePeer(peer.id));
       deleted.push({ id: peer.id, shortId: shortSessionId(peer.id), alias: peer.alias });
     }
 
@@ -548,7 +668,7 @@ export class MailService {
     let deletedCount = 0;
     for (const message of messages) {
       if (referencedMessageIds.has(message.id)) continue;
-      await this.store.removeMessage(message.id);
+      await this.writeStore(() => this.store.removeMessage(message.id));
       deletedCount += 1;
     }
 
@@ -590,9 +710,9 @@ export class MailService {
 
       let nextDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
-        nextDelivery = await this.store.updateDelivery(this.sessionId, resolvedMessageId, {
+        nextDelivery = await this.writeStore(() => this.store.updateDelivery(this.sessionId, resolvedMessageId, {
           presentedAt: nowIso(),
-        }) ?? delivery;
+        })) ?? delivery;
       }
       return this.decorateMessage(message, nextDelivery);
     }
@@ -612,9 +732,9 @@ export class MailService {
     for (const { message, delivery } of entries.slice(0, boundedLimit(options.limit))) {
       let visibleDelivery = delivery;
       if (markPresented && !delivery.presentedAt) {
-        visibleDelivery = await this.store.updateDelivery(this.sessionId, delivery.messageId, {
+        visibleDelivery = await this.writeStore(() => this.store.updateDelivery(this.sessionId, delivery.messageId, {
           presentedAt: nowIso(),
-        }) ?? delivery;
+        })) ?? delivery;
       }
       output.push(await this.decorateMessage(message, visibleDelivery));
     }
@@ -624,7 +744,9 @@ export class MailService {
   async markPresented(messageId: string): Promise<DeliveryRecord | null> {
     const delivery = await this.store.getDelivery(this.sessionId, messageId);
     if (!delivery || delivery.presentedAt) return delivery;
-    return this.store.updateDelivery(this.sessionId, messageId, { presentedAt: nowIso() });
+    return this.writeStore(() => this.store.updateDelivery(this.sessionId, messageId, {
+      presentedAt: nowIso(),
+    }));
   }
 
   async waitForInbox(options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<WaitResult> {
@@ -732,8 +854,8 @@ export class MailService {
     return {
       id: this.sessionId,
       shortId: shortSessionId(this.sessionId),
-      alias: peer?.alias ?? defaultAlias(this.sessionId, []),
-      sessionName: peer?.sessionName ?? null,
+      alias: peer?.alias ?? defaultAlias(this.sessionId, await this.store.listPeers()),
+      sessionName: peer?.sessionName ?? this.currentSessionName ?? null,
       discoverable: peer?.discoverable !== false,
       reminder: reminderStatus(await this.getEffectiveReminder()),
       mailRoot: this.root,
@@ -798,7 +920,17 @@ export class MailService {
     ccIds = unique(ccIds).filter((id) => !toIds.includes(id));
     if (toIds.length === 0) throw new Error("Message has no To recipients after resolution");
 
-    if (input.senderKind === "session") await this.makeMailboxDurable(input.senderId);
+    let senderAlias = input.senderAlias;
+    if (input.senderKind === "session") {
+      // A session's first durable mail write registers its mailbox record.
+      // Resolve the sender alias only after registration: a lazily registering
+      // session may gain its collision-checked alias during ensureRegistered.
+      await this.ensureRegistered();
+      senderAlias = (await this.store.getPeer(input.senderId))?.alias ?? senderAlias;
+      await this.makeMailboxDurable(input.senderId);
+    } else {
+      await this.ensureStore();
+    }
     for (const recipientId of unique([...toIds, ...ccIds])) {
       await this.makeMailboxDurable(recipientId);
     }
@@ -810,12 +942,12 @@ export class MailService {
     // both create the same canonical message.
     for (let attempt = 0; attempt < MAX_MESSAGE_ID_ATTEMPTS; attempt += 1) {
       const id = generateMessageId();
-      message = {
+      const candidate: MessageRecord = {
         version: 1,
         id,
         senderKind: input.senderKind,
         from: input.senderId,
-        fromAlias: input.senderAlias,
+        fromAlias: senderAlias,
         to: toIds,
         cc: ccIds,
         subject: String(subject ?? "(no subject)").trim() || "(no subject)",
@@ -826,8 +958,10 @@ export class MailService {
         createdAt,
       };
 
-      if (await this.store.tryCreateMessage(message)) break;
-      message = null;
+      if (await this.writeStore(() => this.store.tryCreateMessage(candidate))) {
+        message = candidate;
+        break;
+      }
     }
 
     if (!message) {
@@ -841,14 +975,14 @@ export class MailService {
 
   private async deliver(message: MessageRecord, kind: RecipientKind, recipients: string[]): Promise<void> {
     for (const recipientId of recipients) {
-      await this.store.putDelivery({
+      await this.writeStore(() => this.store.putDelivery({
         version: 1,
         messageId: message.id,
         recipientId,
         kind,
         deliveredAt: nowIso(),
         presentedAt: null,
-      });
+      }));
     }
   }
 
@@ -883,35 +1017,49 @@ export class MailService {
       return HUMAN_PRINCIPAL_ID;
     }
 
+    // Sessions without a durable peer record are still addressable while they
+    // are live: their heartbeat advertises id and alias.
     const peers = (await this.store.listPeers()).filter((peer) => !peer.deletedAt);
-    const exactId = peers.find((peer) => peer.id === query);
+    const peerIds = new Set(peers.map((peer) => peer.id));
+    const presenceCandidates = [...await this.activePresenceBySession()]
+      .filter(([sessionId]) => !peerIds.has(sessionId))
+      .map(([sessionId, presences]) => ({
+        id: sessionId,
+        alias: latestPresence(presences)?.alias ?? shortSessionId(sessionId),
+      }));
+    const candidates = [
+      ...peers.map((peer) => ({ id: peer.id, alias: peer.alias })),
+      ...presenceCandidates,
+    ];
+
+    const exactId = candidates.find((candidate) => candidate.id === query);
     if (exactId) return exactId.id;
 
     if (query.replaceAll("-", "").length >= SESSION_ID_FRAGMENT_MIN_LENGTH) {
-      const idMatches = peers.filter((peer) => matchesIdFragment(peer.id, query));
+      const idMatches = candidates.filter((candidate) => matchesIdFragment(candidate.id, query));
       if (idMatches.length === 1) return idMatches[0].id;
       if (idMatches.length > 1) {
-        const candidates = idMatches
-          .map((peer) => `${peer.alias} (${shortSessionId(peer.id)})`)
+        const candidatesText = idMatches
+          .map((candidate) => `${candidate.alias} (${shortSessionId(candidate.id)})`)
           .join(", ");
-        throw new Error(`Ambiguous session id fragment "${query}". Candidates: ${candidates}`);
+        throw new Error(`Ambiguous session id fragment "${query}". Candidates: ${candidatesText}`);
       }
     }
 
-    const aliasMatches = peers.filter(
-      (peer) => peer.alias.toLowerCase() === query.toLowerCase(),
+    const aliasMatches = candidates.filter(
+      (candidate) => candidate.alias.toLowerCase() === query.toLowerCase(),
     );
     if (aliasMatches.length === 1) return aliasMatches[0].id;
 
     if (aliasMatches.length > 1) {
       const active = await this.activeSessionIds();
-      const activeMatches = aliasMatches.filter((peer) => active.has(peer.id));
+      const activeMatches = aliasMatches.filter((candidate) => active.has(candidate.id));
       if (activeMatches.length === 1) return activeMatches[0].id;
 
-      const candidates = aliasMatches
-        .map((peer) => `${peer.alias} (${shortSessionId(peer.id)})`)
+      const candidatesText = aliasMatches
+        .map((candidate) => `${candidate.alias} (${shortSessionId(candidate.id)})`)
         .join(", ");
-      throw new Error(`Ambiguous alias "${query}". Candidates: ${candidates}`);
+      throw new Error(`Ambiguous alias "${query}". Candidates: ${candidatesText}`);
     }
 
     throw new Error(`Unknown recipient "${query}". Use mail action=discover to find peers.`);
@@ -993,10 +1141,38 @@ export class MailService {
       return;
     }
 
-    const peer = await this.store.getPeer(peerId);
-    if (!peer) throw new Error(`Session mailbox "${peerId}" no longer exists`);
+    let peer = await this.store.getPeer(peerId);
+    if (!peer || peer.deletedAt) {
+      // A recipient addressed through presence may never have registered, or
+      // may be a resumed legacy tombstone. Materialize an extant durable owner
+      // before writing its delivery so message GC cannot discard the body.
+      const presence = latestPresence((await this.activePresenceBySession()).get(peerId) ?? []);
+      if (!presence) throw new Error(`Session mailbox "${peerId}" no longer exists`);
+      const timestamp = nowIso();
+      const registered: PeerRecordV2 = peer
+        ? {
+            ...peer,
+            ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
+            cwd: presence.cwd,
+            updatedAt: timestamp,
+          }
+        : {
+            version: 2,
+            id: peerId,
+            alias: presence.alias ?? shortSessionId(peerId),
+            ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
+            cwd: presence.cwd,
+            discoverable: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+      delete registered.deletedAt;
+      delete registered.provisional;
+      await this.writeStore(() => this.store.putPeer(registered));
+      peer = registered;
+    }
     const durable = makePeerDurable(peer);
-    if (durable !== peer) await this.store.putPeer(durable);
+    if (durable !== peer) await this.writeStore(() => this.store.putPeer(durable));
   }
 
   private async discardUnusedMailbox(): Promise<void> {
@@ -1019,7 +1195,6 @@ export class MailService {
     }
 
     if (!await this.store.removeMailboxIfEmpty(this.sessionId)) return;
-    if (!await this.store.removeSessionPresenceIfEmpty(this.sessionId)) return;
 
     const removable = await this.store.getPeer(this.sessionId);
     if (removable?.provisional === true) await this.store.removePeer(this.sessionId);
@@ -1040,7 +1215,7 @@ export class MailService {
         const peer = await this.store.getPeer(this.sessionId);
         if (!peer) throw new Error("Current session is not registered");
         const next = update(peer);
-        if (next !== peer) await this.store.putPeer(next);
+        if (next !== peer) await this.writeStore(() => this.store.putPeer(next));
         resolveResult(next);
       } catch (error) {
         rejectResult(error);
@@ -1067,7 +1242,7 @@ export class MailService {
   }
 
   private async currentPresence() {
-    const all = await this.store.listPresence();
+    const all = await this.presenceStore.listPresence();
     return all.find(
       (presence) => presence.sessionId === this.sessionId && presence.runtimeId === this.runtimeId,
     ) ?? null;
@@ -1075,18 +1250,45 @@ export class MailService {
 
   private async activePresence() {
     const cutoff = Date.now() - this.presenceTtlMs;
-    const all = await this.store.listPresence();
+    const all = await this.presenceStore.listPresence();
     return all.filter((presence) => {
       const seen = Date.parse(presence.lastSeenAt);
       return Number.isFinite(seen) && seen >= cutoff;
     });
   }
 
-  private async activeSessionIds(): Promise<Set<string>> {
-    return new Set((await this.activePresence()).map((presence) => presence.sessionId));
+  private async activePresenceBySession(): Promise<Map<string, PresenceRecord[]>> {
+    const grouped = new Map<string, PresenceRecord[]>();
+    for (const presence of await this.activePresence()) {
+      const records = grouped.get(presence.sessionId) ?? [];
+      records.push(presence);
+      grouped.set(presence.sessionId, records);
+    }
+    return grouped;
   }
 
+  private async activeSessionIds(): Promise<Set<string>> {
+    return new Set((await this.activePresenceBySession()).keys());
+  }
+
+  /**
+   * Identity map for display and addressing: durable peer records, plus
+   * heartbeat-advertised identities for sessions that have not registered.
+   */
   private async peerMap(): Promise<Map<string, PeerRecordV2>> {
-    return new Map((await this.store.listPeers()).map((peer) => [peer.id, peer]));
+    const map = new Map((await this.store.listPeers()).map((peer) => [peer.id, peer]));
+    for (const presence of await this.activePresence()) {
+      if (map.has(presence.sessionId)) continue;
+      map.set(presence.sessionId, {
+        version: 2,
+        id: presence.sessionId,
+        alias: presence.alias ?? shortSessionId(presence.sessionId),
+        cwd: presence.cwd,
+        discoverable: true,
+        createdAt: presence.startedAt,
+        updatedAt: presence.lastSeenAt,
+      });
+    }
+    return map;
   }
 }

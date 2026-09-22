@@ -8,32 +8,6 @@ import { createPresenceRuntime } from "./presence-runtime.ts";
 import { loadReminderSettings } from "./reminder-settings.ts";
 import { startWebUi } from "./web/server.ts";
 
-const UNAVAILABLE_STORAGE_CODES = new Set([
-  "EACCES",
-  "EDQUOT",
-  "EEXIST",
-  "EISDIR",
-  "ENAMETOOLONG",
-  "ENOSPC",
-  "ENOTDIR",
-  "EPERM",
-  "EROFS",
-]);
-
-function errorCode(error: unknown): string | undefined {
-  return typeof error === "object" && error !== null && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
-}
-
-export class MailStorageUnavailableError extends Error {
-  constructor(mailRoot: string, options: { cause: unknown }) {
-    const code = errorCode(options.cause);
-    super(`Pi Mail disabled: cannot write to "${mailRoot}"${code ? ` (${code})` : ""}.`, options);
-    this.name = "MailStorageUnavailableError";
-  }
-}
-
 export interface MailSessionRuntime {
   readonly mailbox: MailService;
   onAgentSettled(): Promise<void>;
@@ -45,6 +19,14 @@ export interface MailSessionRuntime {
   dispose(options?: { discardUnusedMailbox?: boolean }): Promise<void>;
 }
 
+/**
+ * Bind one mailbox to a Pi session's lifecycle.
+ *
+ * Session startup must not touch the project's mail store: the durable store
+ * is created lazily on the first durable mail write. Only ephemeral presence
+ * is written (under the user temp area), which keeps the session discoverable
+ * and addressable while leaving the project directory clean.
+ */
 export async function createMailSessionRuntime(options: {
   pi: ExtensionAPI;
   ctx: ExtensionContext;
@@ -64,13 +46,12 @@ export async function createMailSessionRuntime(options: {
   });
 
   try {
-    await mailbox.init({ sessionName: pi.getSessionName() ?? null });
+    await mailbox.syncSessionName(pi.getSessionName() ?? null);
   } catch (error) {
-    await mailbox.close({ discardUnusedMailbox: true }).catch(() => {});
-    if (UNAVAILABLE_STORAGE_CODES.has(errorCode(error) ?? "")) {
-      throw new MailStorageUnavailableError(mailbox.root, { cause: error });
+    console.error("[pi-mail] presence startup failed:", error);
+    if (ctx.hasUI) {
+      ctx.ui.notify("Pi Mail presence could not start; peer discovery may be unavailable.", "warning");
     }
-    throw error;
   }
 
   const attention = createAttentionRuntime({ pi, ctx, mailbox });

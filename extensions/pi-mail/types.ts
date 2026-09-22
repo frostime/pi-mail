@@ -65,6 +65,14 @@ export interface PresenceRecord {
   cwd: string;
   startedAt: string;
   lastSeenAt: string;
+  /**
+   * Mailbox alias advertised by the heartbeat. Needed because a session only
+   * gains a durable peer record on its first durable mail write, so presence
+   * is the only place where an unregistered session's alias can be observed.
+   */
+  alias?: string;
+  /** Pi session display name, mirrored from the peer record path. */
+  sessionName?: string;
 }
 
 export interface PeerAddress {

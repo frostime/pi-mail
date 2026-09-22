@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+// Isolate the ephemeral presence buckets this file creates away from the
+// user's real ~/.pi directory.
+process.env.PI_MAIL_PRESENCE_ROOT = await mkdtemp(path.join(os.tmpdir(), "pi-mail-presence-web-"));
+
 import { MailService } from "../extensions/pi-mail/mail-service.ts";
 import { startWebUi } from "../extensions/pi-mail/web/server.ts";
 import type { MailMessage } from "../extensions/pi-mail/types.ts";
