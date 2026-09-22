@@ -1142,25 +1142,35 @@ export class MailService {
     }
 
     let peer = await this.store.getPeer(peerId);
-    if (!peer) {
-      // A lazily registering recipient is addressed through its heartbeat;
-      // materialize the record so the new delivery has a durable owner.
+    if (!peer || peer.deletedAt) {
+      // A recipient addressed through presence may never have registered, or
+      // may be a resumed legacy tombstone. Materialize an extant durable owner
+      // before writing its delivery so message GC cannot discard the body.
       const presence = latestPresence((await this.activePresenceBySession()).get(peerId) ?? []);
       if (!presence) throw new Error(`Session mailbox "${peerId}" no longer exists`);
       const timestamp = nowIso();
-      await this.writeStore(() => this.store.putPeer({
-        version: 2,
-        id: peerId,
-        alias: presence.alias ?? shortSessionId(peerId),
-        ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
-        cwd: presence.cwd,
-        discoverable: true,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }));
-      peer = await this.store.getPeer(peerId);
+      const registered: PeerRecordV2 = peer
+        ? {
+            ...peer,
+            ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
+            cwd: presence.cwd,
+            updatedAt: timestamp,
+          }
+        : {
+            version: 2,
+            id: peerId,
+            alias: presence.alias ?? shortSessionId(peerId),
+            ...(presence.sessionName ? { sessionName: presence.sessionName } : {}),
+            cwd: presence.cwd,
+            discoverable: true,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
+      delete registered.deletedAt;
+      delete registered.provisional;
+      await this.writeStore(() => this.store.putPeer(registered));
+      peer = registered;
     }
-    if (!peer) throw new Error(`Session mailbox "${peerId}" no longer exists`);
     const durable = makePeerDurable(peer);
     if (durable !== peer) await this.writeStore(() => this.store.putPeer(durable));
   }

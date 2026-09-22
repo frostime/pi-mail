@@ -204,7 +204,7 @@ test("legacy timestamp-prefix default aliases migrate to generated aliases", asy
   assert.equal(peer.alias, "S716");
 });
 
-test("a tombstoned session re-registers on its first durable write", async () => {
+test("a tombstoned session re-registers on its first outgoing durable write", async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-tombstone-resume-"));
   const resumed = new MailService({
     cwd,
@@ -237,6 +237,61 @@ test("a tombstoned session re-registers on its first durable write", async () =>
   assert.ok(peer);
   assert.equal(peer.alias, "resumed");
   assert.equal(Object.hasOwn(peer, "deletedAt"), false);
+});
+
+test("an incoming delivery revives a tombstoned session as a message owner", async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), "pi-mail-tombstone-recipient-"));
+  const sender = new MailService({
+    cwd,
+    sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    runtimeId: "runtime-sender",
+    presenceTtlMs: 60_000,
+  });
+  const resumed = new MailService({
+    cwd,
+    sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    runtimeId: "runtime-resumed-recipient",
+    presenceTtlMs: 60_000,
+  });
+  const supervisor = new MailService({
+    cwd,
+    sessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    runtimeId: "runtime-supervisor",
+    presenceTtlMs: 60_000,
+  });
+  await sender.init({ alias: "sender" });
+  await supervisor.init({ alias: "supervisor" });
+
+  const timestamp = new Date().toISOString();
+  await sender.store.putPeer({
+    version: 2,
+    id: resumed.sessionId,
+    alias: "resumed",
+    cwd,
+    discoverable: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    deletedAt: timestamp,
+  });
+  await resumed.heartbeat();
+
+  const message = await sender.send({
+    to: [resumed.sessionId],
+    body: "Receiving mail restores this mailbox.",
+  });
+
+  const revived = await sender.store.getPeer(resumed.sessionId);
+  assert.ok(revived);
+  assert.equal(revived.alias, "resumed");
+  assert.equal(Object.hasOwn(revived, "deletedAt"), false);
+
+  // Once the sender is deleted, the revived recipient must still own the
+  // canonical message through its delivery record.
+  await sender.close();
+  const deletion = await supervisor.deleteProjectMailboxes([sender.sessionId]);
+  assert.equal(deletion.gc.deletedCount, 0);
+  assert.ok(await supervisor.store.getMessage(message.id));
+  assert.equal((await inbox(resumed))[0].id, message.id);
 });
 
 test("new sessions receive a compact generated alias and avoid collisions", async () => {

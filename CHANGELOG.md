@@ -14,6 +14,9 @@
 
 - The first mail sent by a just-registered session now carries its actual registered alias; previously a colliding generated alias could sign the message with another session's alias.
 - Leftover in-project presence files from force-killed older Pi Mail runtimes are pruned, so an otherwise empty `.pi/mails/` store can still be removed after upgrading.
+- A session whose mailbox was tombstoned by an older Pi Mail version now revives it: the session's own first durable write re-registers the identity, and mail delivered to the still-active session restores it as a durable message owner. Previously such mail could be discarded by cleanup while the recipient mailbox still referenced it.
+- A session with several live runtimes is now discovered and addressed as one peer using its most recent heartbeat. Duplicate heartbeats could previously make the session's own alias look ambiguous.
+- Storage failures during mailbox deletion, message creation, delivery, and presentation updates now report the same concise "Pi Mail disabled" error as other durable writes instead of raw filesystem errors.
 
 ## 0.10.0 - 2026-09-04
 

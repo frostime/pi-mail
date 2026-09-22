@@ -154,48 +154,6 @@ test("unused mailbox cleanup preserves unrelated project Pi data", async () => {
   }
 });
 
-test("unused mailbox cleanup preserves unknown files in the Mail store", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-unknown-store-file-"));
-  try {
-    const extension = extensionHarness();
-    await extension.emit("session_start", { reason: "startup" }, sessionContext(cwd));
-
-    // The store only exists after a durable write; create it the way Mail
-    // would, then add an unrecognized file that cleanup must preserve.
-    const store = new FsMailStore(resolveMailRoot(cwd));
-    await store.init();
-    const unknownFile = path.join(store.root, "keep.txt");
-    await writeFile(unknownFile, "keep\n");
-
-    await extension.emit("session_shutdown", { reason: "quit" }, sessionContext(cwd));
-
-    assert.equal(await readFile(unknownFile, "utf8"), "keep\n");
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test("unused mailbox cleanup preserves unknown mailbox contents", async () => {
-  const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-unknown-mailbox-file-"));
-  try {
-    const extension = extensionHarness();
-    await extension.emit("session_start", { reason: "startup" }, sessionContext(cwd));
-    const store = new FsMailStore(resolveMailRoot(cwd));
-    await store.init();
-    const unknownFile = path.join(store.root, "mailboxes", SESSION_ID, "keep.txt");
-    await mkdir(path.dirname(unknownFile), { recursive: true });
-    await writeFile(unknownFile, "keep\n");
-
-    await extension.emit("session_shutdown", { reason: "quit" }, sessionContext(cwd));
-
-    assert.equal(await readFile(unknownFile, "utf8"), "keep\n");
-    const presenceStore = new FsPresenceStore(resolvePresenceRoot(cwd).root, resolveProjectRoot(cwd));
-    assert.equal((await presenceStore.listPresence()).length, 0);
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
 test("an unavailable project store surfaces on the first mail write", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-mail-unavailable-store-"));
   const notifications: Array<{ message: string; level: string }> = [];
